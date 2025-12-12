@@ -1,0 +1,26 @@
+{
+  "name": "application",
+  "version": "0.0.2",
+  "description": "Display Steam achievements on stream",
+  "main": "settings.js",
+  "scripts": {
+    "serve": "vue-cli-service serve",
+    "build": "vue-cli-service build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@vue/cli-service": "^5.0.8",
+    "less": "^4.4.2",
+    "less-loader": "^12.3.0"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^7.1.0",
+    "@types/three": "^0.182.0",
+    "camera-controls": "^3.1.2",
+    "three": "^0.182.0",
+    "vue": "^3.4.0"
+  }
+}

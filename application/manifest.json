@@ -1,0 +1,39 @@
+{
+    "version": "0.0.1",
+    "name": "Scene Collection Visualizer",
+    "buildPath": "dist/",
+    "permissions": ["slobs.scenes-sources", "slobs.external-links", "slobs.scene-collections", "slobs.obs-settings", "slobs.notifications"],
+    "supportedPlatforms": ["twitch", "youtube", "facebook"],
+    "icon": "./assets/app-sq.png",
+    "sources": [
+      {
+        "type": "browser_source",
+        "name": "Scene Collection Visualizer",
+        "id": "scene-collection-visualizer",
+        "about": {
+          "description": "Visualize your scene collection..",
+          "bannerImage": "./assets/app-icon.png",
+          "bullets": [
+          ]
+        },
+        "file": "sceneCollection.html",
+        "initialSize": {
+          "type": "absolute",
+          "width": 600,
+          "height": 600
+        }
+      }
+    ],
+    "pages": [
+      {
+        "slot": "top_nav",
+        "file": "settings.html",
+        "persistent": true,
+        "allowPopout": true,
+        "popOutSize": {
+          "width": 800,
+          "height": 800
+        }
+      }
+    ]
+  }
