@@ -2,7 +2,7 @@
     "version": "0.0.1",
     "name": "Scene Collection Visualizer",
     "buildPath": "dist/",
-    "permissions": ["slobs.scenes-sources", "slobs.external-links", "slobs.scene-collections", "slobs.obs-settings", "slobs.notifications"],
+    "permissions": ["slobs.scenes-sources", "slobs.scene-transitions", "slobs.external-links", "slobs.streaming", "slobs.scene-collections", "slobs.obs-settings", "slobs.notifications"],
     "supportedPlatforms": ["twitch", "youtube", "facebook"],
     "icon": "./assets/app-sq.png",
     "sources": [

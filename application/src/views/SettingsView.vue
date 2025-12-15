@@ -51,7 +51,7 @@
         </button>
         
         <!-- Notifications Demo Section -->
-        <div class="notifications-demo">
+        <div class="notifications-demo" style="display: none">
           <button class="notification-btn info" @click="pushNotification('INFO')">
             <span class="icon-information"></span>
             Info
@@ -65,37 +65,42 @@
             Success
           </button>
         </div>
-      </div>
-      
-      <!-- Notification Log -->
-      <div v-if="notificationLog.length" class="notification-log">
-        <div class="notification-log-header">
-          <span>Recent Notifications ({{ notificationLog.length }})</span>
-          <button class="clear-log-btn" @click="notificationLog = []">
-            <span class="icon-trash"></span>
+        <div class="playback-controls-buttons">
+          <button 
+            class="playback-btn play-scenes-btn" 
+            :class="{ active: isPlayingScenes }"
+            :disabled="playableScenes.length <= 1"
+            @click="toggleSceneCycling"
+          >
+            <span :class="isPlayingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
+            {{ isPlayingScenes ? 'Stop' : 'Record Scenes' }}
+          </button>
+          <button 
+            v-if="lastReplayFileId"
+            class="playback-btn replay-btn"
+            :disabled="isReplayPlaying"
+            @click="displayReplayOnPlane"
+          >
+            <span class="icon-replay-buffer"></span>
+            Replay
           </button>
         </div>
-        <div class="notification-log-items">
-          <div 
-            v-for="notif in notificationLog" 
-            :key="notif.id" 
-            class="notification-log-item"
-            :class="{ 'is-read': !notif.unread }"
-          >
-            <span class="notif-type" :class="notif.type.toLowerCase()">{{ notif.type }}</span>
-            <span class="notif-message">{{ notif.message }}</span>
-            <span class="notif-id">#{{ notif.id }}</span>
-            <button 
-              v-if="notif.unread" 
-              class="mark-read-btn" 
-              @click.stop="markNotificationAsRead(notif.id)"
-              title="Mark as read"
-            >
-              <span class="icon-check"></span>
-            </button>
+        <!-- Playback Controls Section -->
+        <div v-if="isPlayingScenes || isReplayPlaying" class="playback-controls-section">
+          <div class="playback-progress-section">
+            <span :class="isReplayPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
+            <div class="playback-progress-bar">
+              <div 
+                class="playback-progress-fill" 
+                :style="{ width: playbackProgress + '%' }"
+              ></div>
+            </div>
+            <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
           </div>
         </div>
       </div>
+      
+      
       
       <div v-if="activeCollectionLoading" class="loading">
         <span class="spinner"></span>
@@ -106,16 +111,24 @@
         <!-- Left column: Active Scenes list -->
         <div class="column scenes-column">
           <div class="column-header">
-            <span class="section-name">Active Scene Collection ({{ activeScenes.length }} Scenes)</span>
+            <span class="section-name">Active Scene Collection ({{ playableScenes.length }}/{{ activeScenes.length }} Scenes)</span>
           </div>
           <div class="column-content">
             <div 
               v-for="scene in activeScenes" 
               :key="scene.id" 
               class="scene-list-item"
-              :class="{ 'selected': activeSelectedSceneId === scene.id, 'is-active': activeSceneData?.id === scene.id }"
+              :class="{ 'selected': activeSelectedSceneId === scene.id, 'is-active': activeSceneData?.id === scene.id, 'is-excluded': excludedSceneIds[scene.id] }"
               @click="selectActiveScene(scene.id)"
             >
+              <button 
+                class="scene-visibility-btn"
+                :class="{ 'excluded': excludedSceneIds[scene.id] }"
+                @click.stop="toggleSceneExclusion(scene.id)"
+                :title="excludedSceneIds[scene.id] ? 'Include in playback' : 'Exclude from playback'"
+              >
+                <span :class="excludedSceneIds[scene.id] ? 'icon-hide' : 'icon-view'"></span>
+              </button>
               <span class="item-name">{{ scene.name }}</span>
               <span class="active-indicator" v-if="activeSceneData?.id === scene.id">●</span>
             </div>
@@ -179,6 +192,67 @@
               Select a scene to view its sources
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timers Section -->
+    <div class="timers-section" style="display: none;">
+      <div class="timer-box" :class="{ active: isRecording }">
+        <span class="timer-icon icon-rec"></span>
+        <span class="timer-label">Recording</span>
+        <span class="timer-value">{{ formatTime(recordingElapsed) }}</span>
+        <label class="timer-toggle" title="Reset timer on start">
+          <input type="checkbox" v-model="resetRecordingOnStart" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="timer-box" :class="{ active: isStreaming }">
+        <span class="timer-icon icon-broadcast"></span>
+        <span class="timer-label">Streaming</span>
+        <span class="timer-value">{{ formatTime(streamingElapsed) }}</span>
+        <label class="timer-toggle" title="Reset timer on start">
+          <input type="checkbox" v-model="resetStreamingOnStart" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Notification Log -->
+    <div v-if="notificationLog.length" class="notification-log">
+      <div class="notification-log-header">
+        <span>Recent Notifications ({{ notificationLog.length }})</span>
+        <button class="clear-log-btn" @click="notificationLog = []">
+          <span class="icon-trash"></span>
+        </button>
+      </div>
+      <div class="notification-log-items">
+        <div 
+          v-for="notif in notificationLog" 
+          :key="notif.id" 
+          class="notification-log-item"
+          :class="{ 'is-read': !notif.unread }"
+        >
+          <span class="notif-type" :class="notif.type.toLowerCase()">{{ notif.type }}</span>
+          <span class="notif-message">{{ notif.message }}</span>
+          <span class="notif-id">#{{ notif.id }}</span>
+          <button 
+            v-if="notif.message && notif.message.includes('Replay loaded')"
+            class="play-replay-btn"
+            @click.stop="displayReplayOnPlane"
+            title="Play Replay"
+          >
+            <span class="icon-playing"></span>
+            Play
+          </button>
+          <button 
+            v-if="notif.unread" 
+            class="mark-read-btn" 
+            @click.stop="markNotificationAsRead(notif.id)"
+            title="Mark as read"
+          >
+            <span class="icon-check"></span>
+          </button>
         </div>
       </div>
     </div>
@@ -307,6 +381,33 @@ export default {
       // Notifications demo
       notificationLog: [],
       notificationCounter: 0,
+      
+      // Streaming/Recording timers
+      recordingElapsed: 0,
+      recordingTimerInterval: null,
+      isRecording: false,
+      resetRecordingOnStart: true,
+      streamingElapsed: 0,
+      streamingTimerInterval: null,
+      isStreaming: false,
+      resetStreamingOnStart: true,
+      
+      // Scene cycling
+      isPlayingScenes: false,
+      sceneCycleInterval: null,
+      currentSceneIndex: 0,
+      transitionTime: 0,
+      playbackProgress: 0,
+      playbackStartTime: null,
+      playbackAnimationId: null,
+      playbackElapsed: 0,
+      playbackTotalDuration: 0,
+      excludedSceneIds: {}, // Track which scene IDs are excluded from cycling
+      
+      // Replay buffer
+      lastReplayFileId: null,
+      replaySaveResolver: null,
+      isReplayPlaying: false,
       
       // Canvas dimensions (1920x1080 base resolution)
       canvasBaseWidth: 1920,
@@ -448,6 +549,10 @@ export default {
       // Default to night-theme until API provides the actual theme
       if (!this.currentTheme) return 'night-theme';
       return this.currentTheme === 'day' ? 'day-theme' : 'night-theme';
+    },
+    playableScenes() {
+      // Filter out excluded scenes
+      return this.activeScenes.filter(scene => !this.excludedSceneIds[scene.id]);
     }
   },
   async mounted() {
@@ -460,6 +565,8 @@ export default {
     // Cleanup resize listeners
     document.removeEventListener('mousemove', this.doResize);
     document.removeEventListener('mouseup', this.stopResize);
+    // Cleanup scene cycling (not manual - component unmounting)
+    this.stopSceneCycling(false);
   },
   methods: {
     // Three.js methods
@@ -640,6 +747,15 @@ export default {
       
       if (this._threeTexture) {
         this._threeTexture.dispose();
+      }
+      
+      // Cleanup replay video element and blob URL
+      if (this._replayVideo) {
+        this._replayVideo.pause();
+        if (this._replayVideo.src) {
+          URL.revokeObjectURL(this._replayVideo.src);
+        }
+        this._replayVideo = null;
       }
       
       if (this._threeRenderer) {
@@ -887,9 +1003,9 @@ export default {
           this.streamlabsOBS.v1.Sources.getSources()
         ]);
         
-        console.log('Active Collection - Scenes:', scenes);
-        console.log('Active Collection - Active Scene:', activeScene);
-        console.log('Active Collection - Sources:', sources);
+        //console.log('Active Collection - Scenes:', scenes);
+        //console.log('Active Collection - Active Scene:', activeScene);
+        //console.log('Active Collection - Sources:', sources);
         
         this.activeScenes = scenes || [];
         this.activeSceneData = activeScene;
@@ -898,9 +1014,6 @@ export default {
         // Auto-select the first scene in the array
         if (this.activeScenes.length > 0) {
           this.activeSelectedSceneId = this.activeScenes[0].id;
-          
-          // Load settings for all sources in the selected scene
-          await this.loadActiveSceneSettings();
           
           // Draw canvas after data loads and DOM updates
           // Use double nextTick to ensure canvas element exists
@@ -938,9 +1051,6 @@ export default {
     async selectActiveScene(sceneId) {
       this.activeSelectedSceneId = sceneId;
       
-      // Load settings for all sources in the selected scene
-      await this.loadActiveSceneSettings();
-      
       // Redraw canvas when scene changes
       this.$nextTick(() => {
         this.drawCanvas();
@@ -951,47 +1061,13 @@ export default {
       });
     },
     
-    async loadActiveSceneSettings() {
-      if (!this.activeSelectedSceneId) return;
-      
-      const scene = this.activeScenes.find(s => s.id === this.activeSelectedSceneId);
-      if (!scene?.nodes) return;
-      
-      // Get unique source IDs from scene nodes (filter by current displayMode)
-      const seenNames = new Set();
-      const sourceIds = scene.nodes
-        .filter(node => node.display === this.displayMode && node.type !== 'folder')
-        .map(node => {
-          const source = this.activeSources.find(s => s.id === node.sourceId);
-          if (!source || seenNames.has(source.name)) return null;
-          seenNames.add(source.name);
-          return node.sourceId;
-        })
-        .filter(Boolean);
-      
-      // Load settings for all sources in parallel
-      const settingsPromises = sourceIds.map(async (sourceId) => {
-        try {
-          const settings = await this.streamlabsOBS.v1.Sources.getObsSettings(sourceId);
-          console.log(`${sourceId}:`, settings);
-          return { sourceId, settings };
-        } catch (err) {
-          console.error(`Error loading settings for ${sourceId}:`, err);
-          return { sourceId, settings: null };
-        }
-      });
-      
-      const results = await Promise.all(settingsPromises);
-      
-      // Update activeSourceSettings with all results
-      const newSettings = { ...this.activeSourceSettings };
-      results.forEach(({ sourceId, settings }) => {
-        newSettings[sourceId] = settings;
-      });
-      this.activeSourceSettings = newSettings;
-      
-      console.log('Loaded settings for scene sources:', Object.keys(newSettings).length);
+    toggleSceneExclusion(sceneId) {
+      this.excludedSceneIds = {
+        ...this.excludedSceneIds,
+        [sceneId]: !this.excludedSceneIds[sceneId]
+      };
     },
+
     
     getActiveSceneSources() {
       if (!this.activeSelectedSceneId) return [];
@@ -1040,11 +1116,34 @@ export default {
         });
     },
     
-    toggleActiveSource(sourceId) {
+    async toggleActiveSource(sourceId) {
+      const isExpanding = !this.expandedActiveSources[sourceId];
       this.expandedActiveSources = {
         ...this.expandedActiveSources,
-        [sourceId]: !this.expandedActiveSources[sourceId]
+        [sourceId]: isExpanding
       };
+      
+      // Lazy-load settings only when expanding and not already loaded
+      if (isExpanding && !this.activeSourceSettings[sourceId]) {
+        this.activeSourceSettings = {
+          ...this.activeSourceSettings,
+          [sourceId]: 'loading'
+        };
+        
+        try {
+          const settings = await this.streamlabsOBS.v1.Sources.getObsSettings(sourceId);
+          this.activeSourceSettings = {
+            ...this.activeSourceSettings,
+            [sourceId]: settings
+          };
+        } catch (err) {
+          console.error(`Error loading settings for ${sourceId}:`, err);
+          this.activeSourceSettings = {
+            ...this.activeSourceSettings,
+            [sourceId]: null
+          };
+        }
+      }
     },
     
     formatSettings(settings) {
@@ -1226,7 +1325,7 @@ export default {
         this.error = null;
         
         const schema = await this.streamlabsOBS.v1.SceneCollections.getSceneCollectionsSchema();
-        console.log('SettingsView: Scene Collections Schema:', schema);
+        //console.log('SettingsView: Scene Collections Schema:', schema);
         
         this.sceneCollectionsSchema = schema || [];
         
@@ -1287,6 +1386,43 @@ export default {
             //console.log('SettingsView: Theme changed to:', theme);
             this.currentTheme = theme;
           });
+
+          // Replay Buffer
+          this.streamlabsOBS.v1.Replay.stateChanged(state => {
+            console.log('Got state change', state);
+          });
+
+          this.streamlabsOBS.v1.Replay.fileSaved(file => {
+            console.log('New replay saved', file);
+            this.lastReplayFileId = file.id;
+            // Resolve the save promise when file is saved
+            if (this.replaySaveResolver) {
+              this.replaySaveResolver();
+              this.replaySaveResolver = null;
+            }
+          });
+
+          this.streamlabsOBS.v1.StreamingRecording.getOutputState().then(state => {
+            console.log('Current output state:', state);
+          });
+
+          this.streamlabsOBS.v1.StreamingRecording.outputStateChanged(state => {
+            console.log('Got new output state', state);
+            
+            // Handle recording timer
+            if (state.recordingStatus === 'recording') {
+              this.startRecordingTimer();
+            } else if (state.recordingStatus === 'offline') {
+              this.stopRecordingTimer();
+            }
+            
+            // Handle streaming timer
+            if (state.streamingStatus === 'live') {
+              this.startStreamingTimer();
+            } else if (state.streamingStatus === 'offline') {
+              this.stopStreamingTimer();
+            }
+          });
           
           // Listen for notification read events
           this.streamlabsOBS.v1.Notifications.notificationRead((ids) => {
@@ -1302,6 +1438,9 @@ export default {
           
           // Load OBS settings first to get canvas resolution
           await this.loadObsSettings();
+          
+          // Load transition time for scene cycling
+          await this.loadTransitionTime();
           
           // Load active collection
           await this.loadActiveCollection();
@@ -1330,14 +1469,14 @@ export default {
     },
 
     // Notification methods
-    async pushNotification(type = 'INFO') {
+    async pushNotification(type = 'INFO', message = null) {
       if (!this.streamlabsOBS?.v1?.Notifications) {
         console.error('Notifications API not available');
         return;
       }
       
       this.notificationCounter++;
-      const messages = {
+      const defaultMessages = {
         'INFO': `ℹ️ Info notification #${this.notificationCounter} - This is an informational message`,
         'WARNING': `⚠️ Warning notification #${this.notificationCounter} - Please pay attention`,
         'SUCCESS': `✅ Success notification #${this.notificationCounter} - Operation completed!`
@@ -1345,11 +1484,11 @@ export default {
       
       try {
         const notification = await this.streamlabsOBS.v1.Notifications.push({
-          message: messages[type] || messages['INFO'],
+          message: message || defaultMessages[type] || defaultMessages['INFO'],
           type: type,
           unread: true,
-          playSound: true,
-          lifeTime: 8000,
+          playSound: false,
+          lifeTime: 2500,
           showTime: true
         });
         
@@ -1469,6 +1608,394 @@ export default {
       } else {
         window.open(url, '_blank');
       }
+    },
+
+    // Timer methods
+    formatTime(seconds) {
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    },
+
+    startRecordingTimer() {
+      if (this.recordingTimerInterval) return; // Already running
+      if (this.resetRecordingOnStart) {
+        this.recordingElapsed = 0;
+      }
+      this.isRecording = true;
+      this.recordingTimerInterval = setInterval(() => {
+        this.recordingElapsed++;
+      }, 1000);
+    },
+
+    stopRecordingTimer() {
+      this.isRecording = false;
+      if (this.recordingTimerInterval) {
+        clearInterval(this.recordingTimerInterval);
+        this.recordingTimerInterval = null;
+      }
+      // Keep elapsed time at last value, don't reset to 0
+    },
+
+    startStreamingTimer() {
+      if (this.streamingTimerInterval) return; // Already running
+      if (this.resetStreamingOnStart) {
+        this.streamingElapsed = 0;
+      }
+      this.isStreaming = true;
+      this.streamingTimerInterval = setInterval(() => {
+        this.streamingElapsed++;
+      }, 1000);
+    },
+
+    stopStreamingTimer() {
+      this.isStreaming = false;
+      if (this.streamingTimerInterval) {
+        clearInterval(this.streamingTimerInterval);
+        this.streamingTimerInterval = null;
+      }
+      // Keep elapsed time at last value, don't reset to 0
+    },
+
+    // Scene cycling methods
+    toggleSceneCycling() {
+      if (this.isPlayingScenes) {
+        this.stopSceneCycling(true); // true = manual stop
+      } else {
+        this.startSceneCycling();
+      }
+    },
+
+    async startSceneCycling() {
+      if (this.playableScenes.length <= 1) return;
+      
+      // Smooth scroll to top of page
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      
+      // Calculate total duration upfront (needed for replay buffer)
+      const intervalTime = 5000 + this.transitionTime;
+      const totalDurationMs = this.playableScenes.length * intervalTime;
+      const totalSeconds = Math.floor(totalDurationMs / 1000);
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      
+      // Ensure replay buffer is enabled and started
+      try {
+        const enabled = await this.streamlabsOBS.v1.Replay.getEnabled();
+        console.log('Buffer enabled:', enabled);
+        
+        if (!enabled) {
+          await this.streamlabsOBS.v1.Replay.setEnabled(true);
+          console.log('Replay buffer enabled');
+        }
+        
+        // Check current buffer state
+        let state = await this.streamlabsOBS.v1.Replay.getState();
+        console.log('Replay buffer state:', state);
+        
+        // Stop buffer if running (required before setDuration)
+        if (state.status === 'running') {
+          await this.streamlabsOBS.v1.Replay.stopBuffer();
+          console.log('Replay buffer stopped');
+          // Wait for buffer to fully stop
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        // Set the replay buffer duration to match total playback time
+        await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
+        console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+        
+        // Start the buffer
+        await this.streamlabsOBS.v1.Replay.startBuffer();
+        console.log('Replay buffer started');
+      } catch (err) {
+        console.error('Error managing replay buffer:', err);
+      }
+      
+      this.isPlayingScenes = true;
+      this.currentSceneIndex = 0;
+      this.playbackProgress = 0;
+      this.playbackStartTime = performance.now();
+      
+      // Show notification with duration
+      this.pushNotification('INFO', `▶️ Playing scenes... duration ${durationStr}`);
+
+      
+      // Start smooth progress animation
+      this.animatePlaybackProgress(totalDurationMs);
+      
+      // Immediately switch to first scene
+      this.activateCurrentScene();
+      
+      // Set up interval to cycle every 5 seconds + transition duration
+      this.sceneCycleInterval = setInterval(() => {
+        this.cycleToNextScene();
+      }, intervalTime);
+    },
+
+    async stopSceneCycling(isManual = false) {
+      const wasPlaying = this.isPlayingScenes;
+      this.streamlabsOBS.v1.Replay.save();
+      this.isPlayingScenes = false;
+      if (this.sceneCycleInterval) {
+        clearInterval(this.sceneCycleInterval);
+        this.sceneCycleInterval = null;
+      }
+      
+      // Cancel progress animation
+      if (this.playbackAnimationId) {
+        cancelAnimationFrame(this.playbackAnimationId);
+        this.playbackAnimationId = null;
+      }
+      this.playbackProgress = 0;
+      this.playbackStartTime = null;
+      this.playbackElapsed = 0;
+      this.playbackTotalDuration = 0;
+      
+      // Show warning if manually interrupted while playing
+      if (isManual && wasPlaying) {
+        this.pushNotification('WARNING', `⚠️ Scene playback interrupted!`);
+      }
+      
+      // Wait for replay to be saved, then display it on the Three.js plane
+      if (wasPlaying && !isManual) {
+        // Wait for fileSaved callback
+        await new Promise(resolve => {
+          this.replaySaveResolver = resolve;
+          // Timeout fallback in case callback doesn't fire
+          setTimeout(() => {
+            if (this.replaySaveResolver) {
+              this.replaySaveResolver();
+              this.replaySaveResolver = null;
+            }
+          }, 10000);
+        });
+        await this.displayReplayOnPlane();
+      }
+    },
+    
+    async displayReplayOnPlane() {
+      if (!this.lastReplayFileId) {
+        console.warn('No replay file ID available');
+        return;
+      }
+      
+      // Smooth scroll to top of page
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      
+      try {
+        const file = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayFileId);
+        console.log('Got replay file!', file.name);
+        
+        // Create a blob URL from the File object
+        const videoUrl = URL.createObjectURL(file);
+        
+        // Create video element
+        const video = document.createElement('video');
+        video.src = videoUrl;
+        video.crossOrigin = 'anonymous';
+        video.loop = false; // Play once only
+        video.muted = true; // Required for autoplay
+        video.playsInline = true;
+        
+        // Wait for video to be ready
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = resolve;
+          video.onerror = reject;
+          video.load();
+        });
+        
+        // Listen for video end to return to wireframe view
+        video.onended = () => {
+          console.log('Replay video ended, returning to wireframe');
+          this.isReplayPlaying = false;
+          this.playbackProgress = 0;
+          this.playbackElapsed = 0;
+          this.playbackTotalDuration = 0;
+          this.restoreWireframeView();
+        };
+        
+        // Track video progress
+        video.ontimeupdate = () => {
+          if (video.duration) {
+            this.playbackElapsed = video.currentTime * 1000; // Convert to ms
+            this.playbackProgress = (video.currentTime / video.duration) * 100;
+          }
+        };
+        
+        // Start playing
+        this.isReplayPlaying = true;
+        this.playbackProgress = 0;
+        this.playbackElapsed = 0;
+        // Set total duration from video (metadata already loaded at this point)
+        this.playbackTotalDuration = video.duration * 1000; // Convert to ms
+        await video.play();
+        console.log('Video playing:', video.videoWidth, 'x', video.videoHeight);
+        
+        // Store video element for cleanup
+        this._replayVideo = video;
+        
+        // Dispose old texture if exists
+        if (this._threeTexture) {
+          this._threeTexture.dispose();
+        }
+        
+        // Create VideoTexture from the video element
+        this._threeTexture = markRaw(new THREE.VideoTexture(video));
+        this._threeTexture.minFilter = THREE.LinearFilter;
+        this._threeTexture.magFilter = THREE.LinearFilter;
+        this._threeTexture.format = THREE.RGBAFormat;
+        
+        // Update the plane material with the new video texture
+        if (this._threePlane) {
+          this._threePlane.material.map = this._threeTexture;
+          this._threePlane.material.needsUpdate = true;
+          
+          // Update plane geometry to match video aspect ratio
+          const videoAspect = video.videoWidth / video.videoHeight;
+          const planeHeight = 2;
+          const planeWidth = planeHeight * videoAspect;
+          
+          this._threePlane.geometry.dispose();
+          this._threePlane.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+          
+          // Re-fit camera to the updated plane
+          this.fitToRect(this._threePlane);
+        }
+        
+        this.pushNotification('SUCCESS', `🎬 Replay loaded on canvas!`);
+      } catch (err) {
+        console.error('Error displaying replay on plane:', err);
+        this.pushNotification('WARNING', `⚠️ Failed to load replay video`);
+      }
+    },
+    
+    restoreWireframeView() {
+      // Cleanup replay video
+      if (this._replayVideo) {
+        this._replayVideo.pause();
+        if (this._replayVideo.src) {
+          URL.revokeObjectURL(this._replayVideo.src);
+        }
+        this._replayVideo = null;
+      }
+      
+      // Dispose video texture
+      if (this._threeTexture) {
+        this._threeTexture.dispose();
+      }
+      
+      // Recreate canvas texture from 2D canvas
+      const canvas2D = this.$refs.sceneCanvas;
+      if (canvas2D && this._threePlane) {
+        this._threeTexture = markRaw(new THREE.CanvasTexture(canvas2D));
+        this._threeTexture.minFilter = THREE.LinearFilter;
+        this._threeTexture.magFilter = THREE.LinearFilter;
+        
+        // Update plane material with canvas texture
+        this._threePlane.material.map = this._threeTexture;
+        this._threePlane.material.needsUpdate = true;
+        
+        // Update plane geometry to match canvas aspect ratio
+        const planeAspect = this.canvasBaseWidth / this.canvasBaseHeight;
+        const planeHeight = 2;
+        const planeWidth = planeHeight * planeAspect;
+        
+        this._threePlane.geometry.dispose();
+        this._threePlane.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+        
+        // Re-fit camera
+        this.fitToRect(this._threePlane);
+        
+        // Redraw the canvas
+        this.drawCanvas();
+      }
+      
+      console.log('Restored wireframe view');
+    },
+
+    animatePlaybackProgress(totalDurationMs) {
+      this.playbackTotalDuration = totalDurationMs;
+      
+      const animate = () => {
+        if (!this.isPlayingScenes || !this.playbackStartTime) return;
+        
+        const elapsed = performance.now() - this.playbackStartTime;
+        const progress = Math.min((elapsed / totalDurationMs) * 100, 100);
+        this.playbackProgress = progress;
+        this.playbackElapsed = Math.min(elapsed, totalDurationMs);
+        
+        if (progress < 100) {
+          this.playbackAnimationId = requestAnimationFrame(animate);
+        }
+      };
+      
+      this.playbackAnimationId = requestAnimationFrame(animate);
+    },
+
+    formatPlaybackTime(ms) {
+      const totalSeconds = Math.floor(ms / 1000);
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    },
+
+    async loadTransitionTime() {
+      try {
+        const transitions = await this.streamlabsOBS.v1.SceneTransitions.getTransitions();
+        if (transitions && transitions.length > 0) {
+          // Use the first transition's duration (active transition)
+          this.transitionTime = transitions[0].duration || 0;
+          //console.log('Transition time loaded:', this.transitionTime, 'ms');
+        }
+      } catch (err) {
+        console.error('Error loading transition time:', err);
+        this.transitionTime = 0;
+      }
+    },
+
+    async activateCurrentScene() {
+      const scene = this.playableScenes[this.currentSceneIndex];
+      if (scene) {
+        try {
+          await this.streamlabsOBS.v1.Scenes.makeSceneActive(scene.id);
+          console.log('Switched to scene:', scene.name);
+          // Update the UI to reflect the new active scene
+          await this.selectActiveScene(scene.id);
+          //await this.reloadActiveCollection();
+        } catch (err) {
+          console.error('Error switching scene:', err);
+        }
+      }
+    },
+
+    async cycleToNextScene() {
+      if (!this.playableScenes.length) return;
+      
+      // Check if we're at the last scene
+      if (this.currentSceneIndex >= this.playableScenes.length - 1) {
+        // We've reached the last scene, stop cycling (not manual)
+        this.stopSceneCycling(false);
+        console.log('Scene cycling complete - stopped at last scene');
+        
+        // Show success notification
+        this.pushNotification('SUCCESS', `✅ Scenes finished playing successfully!`);
+        this.streamlabsOBS.v1.Notifications.push({
+          message: `✅ Scenes finished playing successfully!`,
+          type: 'SUCCESS',
+          unread: true,
+          playSound: false,
+          lifeTime: 2500,
+          showTime: true
+        });
+        return;
+      }
+      
+      // Move to next scene
+      this.currentSceneIndex++;
+      await this.activateCurrentScene();
     },
 
   }
@@ -1822,6 +2349,105 @@ export default {
     flex-direction: column;
 }
 
+/* Timers Section */
+.timers-section {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.timer-box {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--section);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 180px;
+  transition: all 0.2s ease;
+}
+
+.timer-box.active {
+  border-color: var(--teal);
+  background: var(--teal-semi);
+}
+
+.timer-box.active .timer-icon {
+  color: var(--teal);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.timer-icon {
+  font-size: 1.25rem;
+  color: var(--midtone);
+}
+
+.timer-label {
+  font-size: 0.85rem;
+  color: var(--midtone);
+  font-weight: 500;
+}
+
+.timer-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-family: 'Roboto Mono', monospace;
+  color: var(--title);
+  margin-left: auto;
+}
+
+.timer-toggle {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  margin-left: 0.5rem;
+  cursor: pointer;
+}
+
+.timer-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--midtone);
+  border-radius: 18px;
+  transition: 0.2s;
+}
+
+.toggle-slider::before {
+  position: absolute;
+  content: '';
+  height: 12px;
+  width: 12px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--section);
+  border-radius: 50%;
+  transition: 0.2s;
+}
+
+.timer-toggle input:checked + .toggle-slider {
+  background-color: var(--teal);
+}
+
+.timer-toggle input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
 /* Scene Canvas */
 .canvas-container {
   position: relative;
@@ -1972,6 +2598,36 @@ export default {
   color: var(--title);
 }
 
+.scene-list-item.is-excluded {
+  opacity: 0.5;
+  
+  .item-name {
+    text-decoration: line-through;
+  }
+}
+
+.scene-visibility-btn {
+  background: transparent;
+  border: none;
+  padding: 0.25rem;
+  cursor: pointer;
+  color: var(--teal);
+  opacity: 0.6;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  
+  &:hover {
+    opacity: 1;
+  }
+  
+  &.excluded {
+    color: var(--warning);
+    opacity: 0.8;
+  }
+}
+
 /* Expandable source items */
 .source-list-item.expandable {
   flex-direction: column;
@@ -2021,7 +2677,7 @@ export default {
 .action-buttons-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
@@ -2050,6 +2706,45 @@ export default {
 }
 
 .view-collections-btn span {
+  font-size: 1rem;
+}
+
+/* Play Scenes Button */
+.play-scenes-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--teal-semi);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--teal);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'Roboto', Arial, sans-serif;
+  margin-left: auto;
+}
+
+.play-scenes-btn:hover:not(:disabled) {
+  background: var(--teal);
+  color: var(--action-button-text);
+  border-color: var(--teal);
+}
+
+.play-scenes-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.play-scenes-btn.active {
+  background: var(--teal);
+  color: var(--action-button-text);
+  border-color: var(--teal);
+}
+
+.play-scenes-btn span {
   font-size: 1rem;
 }
 
@@ -2213,6 +2908,158 @@ export default {
 .mark-read-btn:hover {
   background: var(--teal);
   color: var(--action-button-text);
+}
+
+.play-replay-btn {
+  background: transparent;
+  border: 1px solid var(--teal);
+  color: var(--teal);
+  cursor: pointer;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-family: 'Roboto', Arial, sans-serif;
+  transition: all 0.2s ease;
+}
+.play-replay-btn:hover {
+  background: var(--teal);
+  color: var(--action-button-text);
+}
+.play-replay-btn span {
+  font-size: 0.75rem;
+}
+
+/* Playback Controls Section */
+.playback-controls-section {
+    background: var(--section);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    /* margin-bottom: 1rem; */
+    overflow: hidden;
+    /* display: flex; */
+    /* width: 100%; */
+    flex: 1;
+    flex-direction: row;
+}
+
+.playback-controls-header {
+  display: flex;
+  align-items: center;
+      justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: var(--dashboard-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.playback-controls-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.playback-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'Roboto', Arial, sans-serif;
+  background: var(--teal-semi);
+  color: var(--teal);
+}
+
+.playback-btn:hover:not(:disabled) {
+  background: var(--teal);
+  color: var(--action-button-text);
+  border-color: var(--teal);
+}
+
+.playback-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.playback-btn.active {
+  background: var(--teal);
+  color: var(--action-button-text);
+  border-color: var(--teal);
+}
+
+.playback-btn span {
+  font-size: 1rem;
+}
+
+.replay-btn {
+  background: rgba(56, 189, 248, 0.1);
+  color: rgb(56, 189, 248);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+.replay-btn:hover:not(:disabled) {
+  background: rgb(56, 189, 248);
+  color: #000;
+  border-color: rgb(56, 189, 248);
+}
+
+/* Playback Progress Section */
+.playback-progress-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.playback-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.playback-icon {
+  font-size: 1rem;
+  color: var(--teal);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.playback-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--paragraph);
+}
+
+.playback-timecode {
+  margin-left: auto;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: 'Roboto Mono', monospace;
+  color: var(--teal);
+}
+
+.playback-progress-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 50px;
+  flex: 1;
+}
+
+.playback-progress-fill {
+  height: 100%;
+  background: var(--teal);
+  border-radius: 3px;
+  /* No transition - animated smoothly via requestAnimationFrame */
 }
 
 /* Modal Styles */
