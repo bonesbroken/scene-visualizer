@@ -68,25 +68,26 @@
         <div class="playback-controls-buttons">
           <button 
             class="playback-btn play-scenes-btn" 
-            :class="{ active: isPlayingScenes }"
-            :disabled="playableScenes.length <= 1"
-            @click="toggleSceneCycling"
+            :class="{ active: isRecordingScenes }"
+            :disabled="playableScenes.length <= 1 || isReplayPlaying"
+            @click="isRecordingScenes ? stopSceneCycling(true) : showRecordingModal = true"
           >
-            <span :class="isPlayingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
-            {{ isPlayingScenes ? 'Stop' : 'Record Scenes' }}
+            <span :class="isRecordingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
+            {{ isRecordingScenes ? 'Stop' : 'Record Scenes' }}
           </button>
           <button 
             v-if="lastReplayFileId"
             class="playback-btn replay-btn"
-            :disabled="isReplayPlaying"
-            @click="displayReplayOnPlane"
+            :class="{ active: isReplayPlaying }"
+            :disabled="isRecordingScenes"
+            @click="isReplayPlaying ? stopReplay() : displayReplayOnPlane()"
           >
-            <span class="icon-replay-buffer"></span>
-            Replay
+            <span :class="isReplayPlaying ? 'fa-solid fa-stop' : 'icon-replay-buffer'"></span>
+            {{ isReplayPlaying ? 'Stop' : 'Replay' }}
           </button>
         </div>
         <!-- Playback Controls Section -->
-        <div v-if="isPlayingScenes || isReplayPlaying" class="playback-controls-section">
+        <div v-if="isRecordingScenes || isReplayPlaying" class="playback-controls-section">
           <div class="playback-progress-section">
             <span :class="isReplayPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
             <div class="playback-progress-bar">
@@ -124,8 +125,9 @@
               <button 
                 class="scene-visibility-btn"
                 :class="{ 'excluded': excludedSceneIds[scene.id] }"
+                :disabled="isRecordingScenes || isReplayPlaying"
                 @click.stop="toggleSceneExclusion(scene.id)"
-                :title="excludedSceneIds[scene.id] ? 'Include in playback' : 'Exclude from playback'"
+                :title="excludedSceneIds[scene.id] ? 'Include in recording' : 'Exclude from playback'"
               >
                 <span :class="excludedSceneIds[scene.id] ? 'icon-hide' : 'icon-view'"></span>
               </button>
@@ -163,27 +165,65 @@
           </div>
           <div class="column-content">
             <template v-if="activeSelectedSceneId">
-              <div 
-                v-for="item in getActiveSceneSourcesWithTransform()" 
-                :key="item.source.id" 
-                class="source-list-item expandable"
-                :class="{ 'expanded': expandedActiveSources[item.source.id] }"
-                @click="toggleActiveSource(item.source.id)"
-              >
-                <div class="source-header">
-                  <span class="toggle-icon">{{ expandedActiveSources[item.source.id] ? '▼' : '▶' }}</span>
-                  <span class="item-icon" :class="isIconClass(getSourceIconByType(item.source.type)) ? getSourceIconByType(item.source.type) : ''">{{ isIconClass(getSourceIconByType(item.source.type)) ? '' : getSourceIconByType(item.source.type) }}</span>
-                  <span class="item-name">{{ item.source.name }}</span>
-                  <span class="item-type">{{ item.source.type }}</span>
-                </div>
-                <div v-if="expandedActiveSources[item.source.id]" class="source-settings" @click.stop>
-                  <div v-if="activeSourceSettings[item.source.id] === 'loading'" class="settings-loading">
-                    Loading settings...
+              <template v-for="item in getActiveSceneSourcesWithTransform()" :key="item.nodeId">
+                <!-- Folder item -->
+                <template v-if="item.isFolder">
+                  <div 
+                    class="source-list-item expandable folder-item"
+                    :class="{ 'expanded': expandedFolders[item.nodeId] }"
+                    @click="toggleFolder(item.nodeId)"
+                  >
+                    <div class="source-header">
+                      <span class="item-icon" :class="expandedFolders[item.nodeId] ? 'fa-solid fa-folder-open' : 'fa-solid fa-folder'"></span>
+                      <span class="item-name">{{ item.name }} ({{ item.children.length }})</span>
+                      <span class="toggle-icon icon-down" :class="{ 'rotated': expandedFolders[item.nodeId] }"></span>
+                    </div>
                   </div>
-                  <pre v-else-if="activeSourceSettings[item.source.id]" class="settings-json">{{ formatSettingsWithTransform(activeSourceSettings[item.source.id], item.source, item.transform) }}</pre>
-                  <div v-else class="settings-empty">No settings available</div>
+                  <!-- Folder children -->
+                  <template v-if="expandedFolders[item.nodeId]">
+                    <div 
+                      v-for="child in item.children" 
+                      :key="child.nodeId" 
+                      class="source-list-item expandable folder-child"
+                      :class="{ 'expanded': expandedActiveSources[child.nodeId] }"
+                      @click="toggleActiveSource(child.nodeId)"
+                    >
+                      <div class="source-header">
+                        <span class="item-icon" :class="isIconClass(getSourceIconFromSource(child.source)) ? getSourceIconFromSource(child.source) : ''">{{ isIconClass(getSourceIconFromSource(child.source)) ? '' : getSourceIconFromSource(child.source) }}</span>
+                        <span class="item-name">{{ child.source.name }}</span>
+                        <span class="toggle-icon icon-down" :class="{ 'rotated': expandedActiveSources[child.nodeId] }"></span>
+                      </div>
+                      <div v-if="expandedActiveSources[child.nodeId]" class="source-settings" @click.stop>
+                        <div v-if="activeSourceSettings[child.nodeId] === 'loading'" class="settings-loading">
+                          Loading settings...
+                        </div>
+                        <pre v-else-if="activeSourceSettings[child.nodeId]" class="settings-json">{{ formatSettingsWithTransform(activeSourceSettings[child.nodeId], child.source, child.transform) }}</pre>
+                        <div v-else class="settings-empty">No settings available</div>
+                      </div>
+                    </div>
+                  </template>
+                </template>
+                <!-- Regular source item -->
+                <div 
+                  v-else
+                  class="source-list-item expandable"
+                  :class="{ 'expanded': expandedActiveSources[item.nodeId] }"
+                  @click="toggleActiveSource(item.nodeId)"
+                >
+                  <div class="source-header">
+                    <span class="item-icon" :class="isIconClass(getSourceIconFromSource(item.source)) ? getSourceIconFromSource(item.source) : ''">{{ isIconClass(getSourceIconFromSource(item.source)) ? '' : getSourceIconFromSource(item.source) }}</span>
+                    <span class="item-name">{{ item.source.name }}</span>
+                    <span class="toggle-icon icon-down" :class="{ 'rotated': expandedActiveSources[item.nodeId] }"></span>
+                  </div>
+                  <div v-if="expandedActiveSources[item.nodeId]" class="source-settings" @click.stop>
+                    <div v-if="activeSourceSettings[item.nodeId] === 'loading'" class="settings-loading">
+                      Loading settings...
+                    </div>
+                    <pre v-else-if="activeSourceSettings[item.nodeId]" class="settings-json">{{ formatSettingsWithTransform(activeSourceSettings[item.nodeId], item.source, item.transform) }}</pre>
+                    <div v-else class="settings-empty">No settings available</div>
+                  </div>
                 </div>
-              </div>
+              </template>
               <div v-if="!getActiveSceneSourcesWithTransform().length" class="empty-state">
                 No sources in this scene
               </div>
@@ -271,7 +311,7 @@
             <div v-for="collection in sceneCollectionsSchema" :key="collection.id" class="collection">
               <div class="collection-header" @click="toggleCollection(collection.id)">
                 <span class="toggle-icon">{{ expandedCollections[collection.id] ? '▼' : '▶' }}</span>
-                <span class="collection-icon fas fa-folder"></span>
+                <span class="collection-icon" :class="expandedCollections[collection.id] ? 'fas fa-folder-open' : 'fas fa-folder'"></span>
                 <span class="collection-name">{{ collection.name }}</span>
               </div>
               
@@ -329,6 +369,66 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recording Settings Modal -->
+    <div v-if="showRecordingModal" class="modal-overlay" @click.self="showRecordingModal = false">
+      <div class="modal-content recording-modal">
+        <div class="modal-header">
+          <h2 class="modal-title">
+            <span class="icon-playing"></span>
+            Record Scenes
+          </h2>
+          <button class="modal-close" @click="showRecordingModal = false">
+            <span class="icon-close"></span>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="recording-settings">
+            <div class="setting-row">
+              <label class="setting-label">
+                <span class="icon-time"></span>
+                Scene Duration (ms)
+              </label>
+              <input 
+                type="number" 
+                class="setting-input"
+                v-model.number="sceneDuration"
+                min="1000"
+                max="60000"
+                step="500"
+              />
+            </div>
+            <div class="setting-row">
+              <label class="setting-label">
+                <span class="icon-transition"></span>
+                Transition Time (ms)
+              </label>
+              <input 
+                type="number" 
+                class="setting-input"
+                v-model.number="transitionTime"
+                min="0"
+                max="10000"
+                step="1"
+              />
+            </div>
+            <div class="setting-info">
+              <span class="icon-information"></span>
+              Each scene will be shown for {{ sceneDuration / 1000 }}s plus {{ transitionTime }}ms transition time.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn cancel-btn" @click="showRecordingModal = false">
+            Cancel
+          </button>
+          <button class="modal-btn start-btn" @click="confirmStartRecording">
+            <span class="icon-playing"></span>
+            Start Recording
+          </button>
         </div>
       </div>
     </div>
@@ -393,10 +493,12 @@ export default {
       resetStreamingOnStart: true,
       
       // Scene cycling
-      isPlayingScenes: false,
+      isRecordingScenes: false,
+      showRecordingModal: false,
       sceneCycleInterval: null,
       currentSceneIndex: 0,
-      transitionTime: 0,
+      sceneDuration: 5000,
+      transitionTime: 300,
       playbackProgress: 0,
       playbackStartTime: null,
       playbackAnimationId: null,
@@ -421,6 +523,7 @@ export default {
       
       // Tree expansion state
       expandedCollections: {},
+      expandedFolders: {}, // Track which folder sources are expanded
       // Selected scene per collection
       selectedScenes: {},
       
@@ -797,17 +900,12 @@ export default {
       const scene = this.activeScenes.find(s => s.id === this.activeSelectedSceneId);
       if (!scene?.nodes) return [];
       
-      // Filter nodes by displayMode and remove duplicates by source name
-      const seenNames = new Set();
+      // Filter nodes by displayMode - each node is unique (same source can appear multiple times)
       return scene.nodes.filter(node => {
         // Only include nodes matching the current display mode
         if (node.display !== this.displayMode) return false;
         // Skip folders
         if (node.type === 'folder') return false;
-        
-        const sourceName = this.getSourceNameById(node.sourceId);
-        if (seenNames.has(sourceName)) return false;
-        seenNames.add(sourceName);
         return true;
       });
     },
@@ -904,17 +1002,33 @@ export default {
         if (!sourceName) return;
         
         const t = node.transform || {};
-        const x = t.position?.x || 0;
-        const y = t.position?.y || 0;
+        const baseX = t.position?.x || 0;
+        const baseY = t.position?.y || 0;
         const scaleX = t.scale?.x || 1;
         const scaleY = t.scale?.y || 1;
         const rotation = t.rotation || 0;
         
+        // Get crop values (in pixels)
+        const crop = t.crop || {};
+        const cropTop = crop.top || 0;
+        const cropBottom = crop.bottom || 0;
+        const cropLeft = crop.left || 0;
+        const cropRight = crop.right || 0;
+        
         const sourceWidth = source?.size?.width || 100;
         const sourceHeight = source?.size?.height || 100;
         
-        const width = sourceWidth * scaleX;
-        const height = sourceHeight * scaleY;
+        // Calculate base dimensions with scale
+        const scaledWidth = sourceWidth * scaleX;
+        const scaledHeight = sourceHeight * scaleY;
+        
+        // Apply crop to dimensions (crop values are scaled)
+        const width = scaledWidth - (cropLeft * scaleX) - (cropRight * scaleX);
+        const height = scaledHeight - (cropTop * scaleY) - (cropBottom * scaleY);
+        
+        // Adjust position for crop (crop.left moves content left, crop.top moves content down)
+        const x = baseX + (cropLeft * scaleX);
+        const y = baseY + (cropTop * scaleY);
         
         ctx.save();
         
@@ -929,18 +1043,70 @@ export default {
         
         // Draw rectangle - use different colors for media sources
         const sourceType = source?.type;
+        let strokeColor;
         if (sourceType === 'image_source' || sourceType === 'ffmpeg_source') {
           ctx.fillStyle = 'rgba(226, 116, 116, 0.05)';
-          ctx.strokeStyle = 'rgb(226, 116, 116)';
+          strokeColor = 'rgb(226, 116, 116)';
         } else {
           ctx.fillStyle = 'rgba(116, 226, 172, 0.05)';
-          ctx.strokeStyle = 'rgb(116, 226, 172)';
+          strokeColor = 'rgb(116, 226, 172)';
         }
         ctx.lineWidth = 2;
+        
+        // Draw fill first (solid rectangle)
         ctx.beginPath();
         ctx.roundRect(x, y, width, height, 4);
         ctx.fill();
-        ctx.stroke();
+        
+        // Draw each side separately - dashed if cropped, solid otherwise
+        ctx.strokeStyle = strokeColor;
+        
+        // Helper to draw a line segment
+        const drawLine = (x1, y1, x2, y2, isCropped) => {
+          ctx.beginPath();
+          ctx.setLineDash(isCropped ? [6, 4] : []);
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        };
+        
+        // Top line
+        drawLine(x, y, x + width, y, cropTop > 0);
+        // Right line
+        drawLine(x + width, y, x + width, y + height, cropRight > 0);
+        // Bottom line
+        drawLine(x + width, y + height, x, y + height, cropBottom > 0);
+        // Left line
+        drawLine(x, y + height, x, y, cropLeft > 0);
+        
+        // Reset line dash for other drawing
+        ctx.setLineDash([]);
+        
+        // Draw resize handles (8 small white squares on edges)
+        const handleSize = 6;
+        const halfHandle = handleSize / 2;
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.lineWidth = 1;
+        
+        const drawHandle = (hx, hy) => {
+          ctx.fillRect(hx - halfHandle, hy - halfHandle, handleSize, handleSize);
+          ctx.strokeRect(hx - halfHandle, hy - halfHandle, handleSize, handleSize);
+        };
+        
+        // Top row: left, middle, right
+        drawHandle(x, y);
+        drawHandle(x + width / 2, y);
+        drawHandle(x + width, y);
+        
+        // Middle row: left, right
+        drawHandle(x, y + height / 2);
+        drawHandle(x + width, y + height / 2);
+        
+        // Bottom row: left, middle, right
+        drawHandle(x, y + height);
+        drawHandle(x + width / 2, y + height);
+        drawHandle(x + width, y + height);
         
         // Draw label
         ctx.fillStyle = '#80f5d2';
@@ -1095,52 +1261,110 @@ export default {
       const scene = this.activeScenes.find(s => s.id === this.activeSelectedSceneId);
       if (!scene?.nodes) return [];
       
-      // Get source IDs from scene nodes and find matching sources with transform data
-      // Only include horizontal display nodes, remove duplicates by name
-      const seenNames = new Set();
-      return scene.nodes
-        .filter(node => node.display === 'horizontal' && node.type !== 'folder')
-        .map(node => {
-          const source = this.activeSources.find(s => s.id === node.sourceId);
-          if (!source) return null;
-          return {
-            source,
-            transform: node.transform || {}
-          };
-        })
-        .filter(item => {
-          if (!item) return false;
-          if (seenNames.has(item.source.name)) return false;
-          seenNames.add(item.source.name);
-          return true;
+      // Build a set of all childrenIds (these are NODE IDs, not source IDs)
+      const childrenNodeIdsSet = new Set();
+      scene.nodes.forEach(node => {
+        if (node.childrenIds && Array.isArray(node.childrenIds)) {
+          node.childrenIds.forEach(id => childrenNodeIdsSet.add(id));
+        }
+      });
+      
+      // Get nodes with their sources and transform data
+      // Each node is unique (same source can appear multiple times with different transforms)
+      const result = [];
+      
+      scene.nodes
+        .filter(node => node.display === 'horizontal')
+        .forEach(node => {
+          // Skip nodes that are children of a folder (they'll be nested under folder)
+          if (childrenNodeIdsSet.has(node.id)) return;
+          
+          if (node.type === 'folder') {
+            // For folders, build children from childrenIds (which are node IDs)
+            const children = [];
+            if (node.childrenIds && Array.isArray(node.childrenIds)) {
+              node.childrenIds.forEach(childNodeId => {
+                // Find the child node by its ID
+                const childNode = scene.nodes.find(n => n.id === childNodeId && n.display === 'horizontal');
+                if (childNode && childNode.sourceId) {
+                  const childSource = this.activeSources.find(s => s.id === childNode.sourceId);
+                  if (childSource) {
+                    children.push({
+                      nodeId: childNode.id,
+                      source: childSource,
+                      transform: childNode.transform || {},
+                      isChild: true
+                    });
+                  }
+                }
+              });
+            }
+            result.push({
+              nodeId: node.id,
+              name: node.name, // Folders have name directly on node
+              isFolder: true,
+              children
+            });
+          } else {
+            // Regular source node
+            const source = this.activeSources.find(s => s.id === node.sourceId);
+            if (source) {
+              result.push({
+                nodeId: node.id,
+                source,
+                transform: node.transform || {}
+              });
+            }
+          }
         });
+      
+      return result;
     },
     
-    async toggleActiveSource(sourceId) {
-      const isExpanding = !this.expandedActiveSources[sourceId];
+    toggleFolder(folderId) {
+      this.expandedFolders = {
+        ...this.expandedFolders,
+        [folderId]: !this.expandedFolders[folderId]
+      };
+    },
+    
+    async toggleActiveSource(nodeId) {
+      const isExpanding = !this.expandedActiveSources[nodeId];
       this.expandedActiveSources = {
         ...this.expandedActiveSources,
-        [sourceId]: isExpanding
+        [nodeId]: isExpanding
       };
       
       // Lazy-load settings only when expanding and not already loaded
-      if (isExpanding && !this.activeSourceSettings[sourceId]) {
+      if (isExpanding && !this.activeSourceSettings[nodeId]) {
         this.activeSourceSettings = {
           ...this.activeSourceSettings,
-          [sourceId]: 'loading'
+          [nodeId]: 'loading'
         };
         
         try {
-          const settings = await this.streamlabsOBS.v1.Sources.getObsSettings(sourceId);
-          this.activeSourceSettings = {
-            ...this.activeSourceSettings,
-            [sourceId]: settings
-          };
+          // Find the source ID from the node ID
+          const scene = this.activeScenes.find(s => s.id === this.activeSelectedSceneId);
+          const node = scene?.nodes?.find(n => n.id === nodeId);
+          const sourceId = node?.sourceId;
+          
+          if (sourceId) {
+            const settings = await this.streamlabsOBS.v1.Sources.getObsSettings(sourceId);
+            this.activeSourceSettings = {
+              ...this.activeSourceSettings,
+              [nodeId]: settings
+            };
+          } else {
+            this.activeSourceSettings = {
+              ...this.activeSourceSettings,
+              [nodeId]: null
+            };
+          }
         } catch (err) {
-          console.error(`Error loading settings for ${sourceId}:`, err);
+          console.error(`Error loading settings for node ${nodeId}:`, err);
           this.activeSourceSettings = {
             ...this.activeSourceSettings,
-            [sourceId]: null
+            [nodeId]: null
           };
         }
       }
@@ -1243,6 +1467,7 @@ export default {
       // Remove duplicates based on source name (H/V versions have same name)
       const seenNames = new Set();
       return items.filter(item => {
+        console.log(item);
         const sourceName = this.getSourceName(item.sourceId, collection.sources);
         if (seenNames.has(sourceName)) {
           return false;
@@ -1265,6 +1490,14 @@ export default {
     
     getSourceIcon(sourceId, sources) {
       const source = sources?.find(s => s.id === sourceId);
+      return this.getSourceIconFromSource(source);
+    },
+    
+    getSourceIconFromSource(source) {
+      // Check for smart browser source
+      if (source?.type === 'browser_source' && source?.managerType === 'smartBrowserSource') {
+        return 'icon-ai';
+      }
       return this.getSourceIconByType(source?.type);
     },
     
@@ -1403,7 +1636,7 @@ export default {
           });
 
           this.streamlabsOBS.v1.StreamingRecording.getOutputState().then(state => {
-            console.log('Current output state:', state);
+            //console.log('Current output state:', state);
           });
 
           this.streamlabsOBS.v1.StreamingRecording.outputStateChanged(state => {
@@ -1440,7 +1673,7 @@ export default {
           await this.loadObsSettings();
           
           // Load transition time for scene cycling
-          await this.loadTransitionTime();
+          //await this.loadTransitionTime();
           
           // Load active collection
           await this.loadActiveCollection();
@@ -1455,6 +1688,10 @@ export default {
               this.reloadActiveCollection();
             });
           }
+
+          this.streamlabsOBS.v1.Sources.getAvailableSourceTypes().then(types => {
+            //console.log('source types', types);
+          });
 
         });
       }
@@ -1659,8 +1896,13 @@ export default {
     },
 
     // Scene cycling methods
+    confirmStartRecording() {
+      this.showRecordingModal = false;
+      this.startSceneCycling();
+    },
+
     toggleSceneCycling() {
-      if (this.isPlayingScenes) {
+      if (this.isRecordingScenes) {
         this.stopSceneCycling(true); // true = manual stop
       } else {
         this.startSceneCycling();
@@ -1674,7 +1916,7 @@ export default {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       
       // Calculate total duration upfront (needed for replay buffer)
-      const intervalTime = 5000 + this.transitionTime;
+      const intervalTime = this.sceneDuration + this.transitionTime;
       const totalDurationMs = this.playableScenes.length * intervalTime;
       const totalSeconds = Math.floor(totalDurationMs / 1000);
       const mins = Math.floor(totalSeconds / 60);
@@ -1707,27 +1949,33 @@ export default {
         await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
         console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
         
-        // Start the buffer
+        // Switch to first scene BEFORE starting the buffer
+        // This ensures the initial transition is not recorded
+        this.currentSceneIndex = 0;
+        await this.activateCurrentScene();
+        
+        // Wait for transition to complete before starting buffer
+        if (this.transitionTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, this.transitionTime));
+        }
+        
+        // Start the buffer after transition completes
         await this.streamlabsOBS.v1.Replay.startBuffer();
         console.log('Replay buffer started');
       } catch (err) {
         console.error('Error managing replay buffer:', err);
       }
       
-      this.isPlayingScenes = true;
-      this.currentSceneIndex = 0;
+      this.isRecordingScenes = true;
       this.playbackProgress = 0;
       this.playbackStartTime = performance.now();
       
       // Show notification with duration
-      this.pushNotification('INFO', `▶️ Playing scenes... duration ${durationStr}`);
+      this.pushNotification('INFO', `▶️ Recording scenes: ${durationStr}`);
 
       
       // Start smooth progress animation
       this.animatePlaybackProgress(totalDurationMs);
-      
-      // Immediately switch to first scene
-      this.activateCurrentScene();
       
       // Set up interval to cycle every 5 seconds + transition duration
       this.sceneCycleInterval = setInterval(() => {
@@ -1736,9 +1984,9 @@ export default {
     },
 
     async stopSceneCycling(isManual = false) {
-      const wasPlaying = this.isPlayingScenes;
+      const wasRecording = this.isRecordingScenes;
       this.streamlabsOBS.v1.Replay.save();
-      this.isPlayingScenes = false;
+      this.isRecordingScenes = false;
       if (this.sceneCycleInterval) {
         clearInterval(this.sceneCycleInterval);
         this.sceneCycleInterval = null;
@@ -1754,13 +2002,13 @@ export default {
       this.playbackElapsed = 0;
       this.playbackTotalDuration = 0;
       
-      // Show warning if manually interrupted while playing
-      if (isManual && wasPlaying) {
-        this.pushNotification('WARNING', `⚠️ Scene playback interrupted!`);
+      // Show warning if manually interrupted while recording
+      if (isManual && wasRecording) {
+        this.pushNotification('WARNING', `⚠️ Scene recording interrupted!`);
       }
       
       // Wait for replay to be saved, then display it on the Three.js plane
-      if (wasPlaying && !isManual) {
+      if (wasRecording && !isManual) {
         // Wait for fileSaved callback
         await new Promise(resolve => {
           this.replaySaveResolver = resolve;
@@ -1915,12 +2163,23 @@ export default {
       
       console.log('Restored wireframe view');
     },
+    
+    stopReplay() {
+      if (!this.isReplayPlaying) return;
+      
+      this.isReplayPlaying = false;
+      this.playbackProgress = 0;
+      this.playbackElapsed = 0;
+      this.playbackTotalDuration = 0;
+      this.restoreWireframeView();
+      console.log('Replay stopped manually');
+    },
 
     animatePlaybackProgress(totalDurationMs) {
       this.playbackTotalDuration = totalDurationMs;
       
       const animate = () => {
-        if (!this.isPlayingScenes || !this.playbackStartTime) return;
+        if (!this.isRecordingScenes || !this.playbackStartTime) return;
         
         const elapsed = performance.now() - this.playbackStartTime;
         const progress = Math.min((elapsed / totalDurationMs) * 100, 100);
@@ -1945,10 +2204,11 @@ export default {
     async loadTransitionTime() {
       try {
         const transitions = await this.streamlabsOBS.v1.SceneTransitions.getTransitions();
+        console.log('Loaded transitions:', transitions);
         if (transitions && transitions.length > 0) {
           // Use the first transition's duration (active transition)
           this.transitionTime = transitions[0].duration || 0;
-          //console.log('Transition time loaded:', this.transitionTime, 'ms');
+          console.log('Transition time loaded:', this.transitionTime, 'ms');
         }
       } catch (err) {
         console.error('Error loading transition time:', err);
@@ -1981,9 +2241,9 @@ export default {
         console.log('Scene cycling complete - stopped at last scene');
         
         // Show success notification
-        this.pushNotification('SUCCESS', `✅ Scenes finished playing successfully!`);
+        this.pushNotification('SUCCESS', `✅ Scenes finished recording successfully!`);
         this.streamlabsOBS.v1.Notifications.push({
-          message: `✅ Scenes finished playing successfully!`,
+          message: `✅ Scenes finished recording successfully!`,
           type: 'SUCCESS',
           unread: true,
           playSound: false,
@@ -2268,8 +2528,12 @@ export default {
 .toggle-icon {
   font-size: 0.7rem;
   color: var(--midtone);
-  width: 12px;
-  text-align: center;
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+
+.toggle-icon.rotated {
+  transform: rotate(180deg);
 }
 
 /* Section styles */
@@ -2635,6 +2899,18 @@ export default {
   cursor: pointer;
 }
 
+.source-list-item.folder-item {
+  background: rgba(128, 245, 210, 0.03);
+  border-left: 2px solid var(--teal);
+}
+
+
+.source-list-item.folder-child {
+  margin-left: 1.5rem;
+  border-left: 1px dashed var(--border);
+  background: rgba(128, 245, 210, 0.02);
+}
+
 .source-header {
   display: flex;
   align-items: center;
@@ -2658,7 +2934,7 @@ export default {
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
-  max-height: 200px;
+  max-height: 100px;
   overflow-y: auto;
 }
 
@@ -2683,26 +2959,25 @@ export default {
 
 /* View Collections Button */
 .view-collections-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--teal-semi);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--teal);
-  width: fit-content;
-  font-size: 0.95rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: 'Roboto', Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .5rem .75rem;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    color: var(--button);
+    width: -moz-fit-content;
+    width: fit-content;
+    font-size: .95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all .2s ease;
+    font-family: Roboto,Arial,sans-serif;
 }
 
 .view-collections-btn:hover {
-  background: var(--teal);
-  color: var(--action-button-text);
-  border-color: var(--teal);
+  color: var(--button-hover);
 }
 
 .view-collections-btn span {
@@ -3146,5 +3421,127 @@ export default {
 
 .modal-body .two-column-layout {
   min-height: 150px;
+}
+
+/* Recording Modal */
+.recording-modal {
+  max-width: 400px;
+}
+
+.recording-modal .modal-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recording-modal .modal-title span {
+  font-size: 1rem;
+  color: var(--accent);
+}
+
+.recording-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.setting-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setting-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--title);
+}
+
+.setting-label span {
+  color: var(--accent);
+}
+
+.setting-input {
+  width: 100px;
+  padding: 0.75rem;
+  background: var(--dark-background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--title);
+  font-size: 0.95rem;
+  text-align: center;
+  transition: border-color 0.2s ease;
+}
+
+.setting-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.setting-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(128, 245, 210, 0.05);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--paragraph);
+}
+
+.setting-info span {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.modal-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cancel-btn {
+  background: var(--button);
+  border: none;
+  font-weight: 600;
+  color: var(--paragraph);
+}
+
+.cancel-btn:hover {
+  color: var(--title);
+}
+
+.start-btn {
+  background: var(--teal);
+  border: none;
+  font-weight: 600;
+  color: var(--dark-background);
+}
+
+.start-btn:hover {
+  background: var(--teal-hover);
+}
+
+.start-btn span {
+  font-size: 0.85rem;
 }
 </style>
