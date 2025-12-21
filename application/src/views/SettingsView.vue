@@ -69,11 +69,12 @@
           <button 
             class="playback-btn play-scenes-btn" 
             :class="{ active: isRecordingScenes }"
-            :disabled="playableScenes.length <= 1 || isReplayPlaying"
+            :disabled="playableScenes.length <= 1 || isReplayPlaying || isStartingRecording"
             @click="isRecordingScenes ? stopSceneCycling(true) : showRecordingModal = true"
           >
-            <span :class="isRecordingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
-            {{ isRecordingScenes ? 'Stop' : 'Record Scenes' }}
+            <span v-if="isStartingRecording" class="spinner-small"></span>
+            <span v-else :class="isRecordingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
+            {{ isStartingRecording ? 'Starting...' : (isRecordingScenes ? 'Stop' : 'Record Scenes') }}
           </button>
           <button 
             v-if="lastReplayFileId"
@@ -85,19 +86,29 @@
             <span :class="isReplayPlaying ? 'fa-solid fa-stop' : 'icon-replay-buffer'"></span>
             {{ isReplayPlaying ? 'Stop' : 'Replay' }}
           </button>
+          <button 
+            v-if="lastReplayFileId"
+            class="playback-btn export-btn"
+            :disabled="isReplayPlaying || isRecordingScenes || isExporting"
+            @click="exportReplayToScene()"
+          >
+            <span v-if="isExporting" class="spinner-small"></span>
+            <span v-else class="icon-share"></span>
+            {{ isExporting ? 'Exporting...' : 'Export' }}
+          </button>
         </div>
-        <!-- Playback Controls Section -->
-        <div v-if="isRecordingScenes || isReplayPlaying" class="playback-controls-section">
-          <div class="playback-progress-section">
-            <span :class="isReplayPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
-            <div class="playback-progress-bar">
-              <div 
-                class="playback-progress-fill" 
-                :style="{ width: playbackProgress + '%' }"
-              ></div>
-            </div>
-            <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
+      </div>
+      <!-- Playback Controls Section - Full Width Row -->
+      <div v-if="isRecordingScenes || isReplayPlaying" class="playback-controls-section full-width">
+        <div class="playback-progress-section">
+          <span :class="isReplayPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
+          <div class="playback-progress-bar">
+            <div 
+              class="playback-progress-fill" 
+              :style="{ width: playbackProgress + '%' }"
+            ></div>
           </div>
+          <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
         </div>
       </div>
       
@@ -417,7 +428,11 @@
             </div>
             <div class="setting-info">
               <span class="icon-information"></span>
-              Each scene will be shown for {{ sceneDuration / 1000 }}s plus {{ transitionTime }}ms transition time.
+              Each scene will be shown for {{ sceneDuration / 1000 }}s plus {{ transitionTime / 1000 }}s transition time.
+            </div>
+            <div class="setting-info">
+              <span class="icon-time"></span>
+              Total expected video duration: {{ expectedRecordingDuration }}
             </div>
           </div>
         </div>
@@ -432,6 +447,10 @@
         </div>
       </div>
     </div>
+  </div>
+  <!-- Disclaimer -->
+  <div class="disclaimer">
+    <p>Have issues, feedback, or a suggestion? Reach out via <span class="modal-link" @click="openExternalLink('https://twitter.com/bonesbrokencom')">X</span> or <span class="modal-link" @click="openExternalLink('https://discord.gg/XgZKP9nYU7')">Discord</span>.</p>
   </div>
 </template>
 
@@ -449,7 +468,7 @@ export default {
     return {
       streamlabs: null,
       streamlabsOBS: null,
-      
+      existingSource: null,
       // Three.js objects - stored outside of Vue reactivity
       // (actual objects stored in non-reactive properties)
       threeInitialized: false,
@@ -494,9 +513,13 @@ export default {
       
       // Scene cycling
       isRecordingScenes: false,
+      isExporting: false, // Loading state for export button
+      isStartingRecording: false, // Loading state for record button
       showRecordingModal: false,
+      sceneCycleTimeout: null, // Timeout for first scene
       sceneCycleInterval: null,
       currentSceneIndex: 0,
+      scenesToCycle: [], // Snapshot of scenes to play during a cycle
       sceneDuration: 5000,
       transitionTime: 300,
       playbackProgress: 0,
@@ -656,6 +679,14 @@ export default {
     playableScenes() {
       // Filter out excluded scenes
       return this.activeScenes.filter(scene => !this.excludedSceneIds[scene.id]);
+    },
+    expectedRecordingDuration() {
+      const intervalTime = this.sceneDuration + this.transitionTime;
+      const totalMs = this.playableScenes.length * intervalTime;
+      const totalSeconds = Math.floor(totalMs / 1000);
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
     }
   },
   async mounted() {
@@ -1597,6 +1628,33 @@ export default {
       this.streamlabsOBS = window.streamlabsOBS;
       if (this.streamlabsOBS && this.streamlabsOBS.apiReady) {
         this.streamlabsOBS.apiReady.then(async () => {
+
+          // Remove any existing app sources from all scenes
+          try {
+            const [appSources, scenes] = await Promise.all([
+              this.streamlabsOBS.v1.Sources.getAppSources(),
+              this.streamlabsOBS.v1.Scenes.getScenes()
+            ]);
+            
+            if (appSources && appSources.length > 0) {
+              const appSourceIds = new Set(appSources.map(s => s.id));
+              console.log('SettingsView: Found app sources to clean up:', appSources.map(s => s.name));
+              
+              for (const scene of scenes) {
+                if (scene.nodes) {
+                  for (const node of scene.nodes) {
+                    if (appSourceIds.has(node.sourceId)) {
+                      console.log(`SettingsView: Removing app source from "${scene.name}"`);
+                      await this.streamlabsOBS.v1.Scenes.removeSceneItem(scene.id, node.id);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error('SettingsView: Error cleaning up app sources:', err);
+          }
+
           this.canAddSource = true;
           console.log('SettingsView: StreamlabsOBS API ready');
           
@@ -1622,12 +1680,25 @@ export default {
 
           // Replay Buffer
           this.streamlabsOBS.v1.Replay.stateChanged(state => {
-            console.log('Got state change', state);
+            //console.log('Got state change', state);
           });
 
-          this.streamlabsOBS.v1.Replay.fileSaved(file => {
+          this.streamlabsOBS.v1.Replay.fileSaved(async (file) => {
             console.log('New replay saved', file);
             this.lastReplayFileId = file.id;
+            
+            // Store file to IndexedDB for cross-view access
+            try {
+              const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(file.id);
+              console.log('Got replay file:', replayFile.name, 'size:', replayFile.size);
+              
+              // Store in IndexedDB
+              await this.storeVideoInIndexedDB('latestReplay', replayFile);
+              console.log('Replay stored in IndexedDB');
+            } catch (err) {
+              console.error('Error storing replay in IndexedDB:', err);
+            }
+            
             // Resolve the save promise when file is saved
             if (this.replaySaveResolver) {
               this.replaySaveResolver();
@@ -1659,7 +1730,7 @@ export default {
           
           // Listen for notification read events
           this.streamlabsOBS.v1.Notifications.notificationRead((ids) => {
-            console.log('Notifications read:', ids);
+            //console.log('Notifications read:', ids);
             // Update our local log to mark notifications as read
             ids.forEach(id => {
               const notif = this.notificationLog.find(n => n.id === id);
@@ -1672,9 +1743,6 @@ export default {
           // Load OBS settings first to get canvas resolution
           await this.loadObsSettings();
           
-          // Load transition time for scene cycling
-          //await this.loadTransitionTime();
-          
           // Load active collection
           await this.loadActiveCollection();
           
@@ -1686,12 +1754,14 @@ export default {
             this.streamlabsOBS.v1.App.onNavigation(async (nav) => {
               //console.log('SettingsView: Navigation event received', nav);
               this.reloadActiveCollection();
+
+              this.streamlabsOBS.v1.Sources.getAppSources().then(sources => {
+                if (!sources || sources.length === 0) return;
+                console.log('Got sources!', sources);
+                this.existingSource = sources[0].id;
+              });
             });
           }
-
-          this.streamlabsOBS.v1.Sources.getAvailableSourceTypes().then(types => {
-            //console.log('source types', types);
-          });
 
         });
       }
@@ -1702,6 +1772,31 @@ export default {
       });
       
       this.streamlabs.onMessage(event => {
+        // Display remote logs from SceneCollectionView
+        if (event.type === 'remoteLog') {
+          const { level, args } = event.data;
+          const prefix = '[SceneCollectionView]';
+          if (level === 'error') {
+            console.error(prefix, ...args);
+          } else if (level === 'warn') {
+            console.warn(prefix, ...args);
+          } else {
+            console.log(prefix, ...args);
+          }
+        }
+        
+        // Handle video loaded confirmation from SceneCollectionView
+        if (event.type === 'isVideoSourceInBrowserSourceLoaded') {
+          if (event.data.isVideoSourceInBrowserSourceLoaded === true) {
+            console.log('SettingsView: SceneCollectionView confirmed video loaded');
+            this.isVideoSourceInBrowserSourceLoaded = true;
+            // Resolve pending promise if exists
+            if (this._videoLoadedResolve) {
+              this._videoLoadedResolve();
+              this._videoLoadedResolve = null;
+            }
+          }
+        }
       });
     },
 
@@ -1729,7 +1824,7 @@ export default {
           showTime: true
         });
         
-        console.log('Pushed notification:', notification);
+        //console.log('Pushed notification:', notification);
         
         // Add to our local log
         this.notificationLog.unshift({
@@ -1802,42 +1897,222 @@ export default {
       console.log('SettingsView: Selected modal scene:', scene.name);
     },
 
-    async confirmAddToScene() {
-      if (!this.selectedSceneId || !this.currentSourceType) return;
+    async exportReplayToScene() {
+      if (!this.lastReplayFileId || !this.activeScenes.length || !this.existingSource) {
+        console.error('No replay file or scenes available');
+        return;
+      }
+      
+      this.isExporting = true;
       
       try {
-        // Determine source name based on type
-        const sourceNames = {
-          'scene-collection-visualizer': `Scene Collection Visualizer`
-        };
-        const sourceName = sourceNames[this.currentSourceType];
+        // Get the first scene and make it active
+        const firstScene = this.activeScenes[0];
+        console.log('SettingsView: Making scene active:', firstScene.name);
+        await this.streamlabsOBS.v1.Scenes.makeSceneActive(firstScene.id);
         
-        // Create the app source
-        const source = await this.streamlabsOBS.v1.Sources.createAppSource(
-          sourceName,
-          this.currentSourceType
-        );
+        // Wait for browser source to initialize after scene becomes active
+        console.log('SettingsView: Waiting for browser source to initialize...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Smooth scroll to top of page
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         
-        // Add source to selected scene
-        const sceneItem = await this.streamlabsOBS.v1.Scenes.createSceneItem(
-          this.selectedSceneId,
-          source.id
-        );
+        // Get the replay file and send to SceneCollectionView via postMessage
+        const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayFileId);
+        console.log('exportReplayToScene', replayFile);
         
-        console.log(`SettingsView: Added ${sourceName} to scene:`, sceneItem);
+        // Convert file to base64 for postMessage (IndexedDB not shared between views)
+        // Use FileReader to avoid stack overflow with large files
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            // result is "data:video/mp4;base64,XXXX" - extract just the base64 part
+            const dataUrl = reader.result;
+            const base64Data = dataUrl.split(',')[1];
+            resolve(base64Data);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(replayFile);
+        });
+        console.log('SettingsView: Converted video to base64, length:', base64.length);
         
-        this.closeSceneModal();
+        // Create video element to get duration (use blob URL locally for duration check)
+        const localBlobUrl = URL.createObjectURL(replayFile);
+        const video = document.createElement('video');
+        video.src = localBlobUrl;
+        video.crossOrigin = 'anonymous';
+        video.loop = false;
+        video.muted = true;
+        video.playsInline = true;
         
-        // Navigate to editor to see the result
-        if (this.streamlabsOBS.v1.App) {
-          this.streamlabsOBS.v1.App.navigate('Editor');
+        // Wait for video to be ready
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = resolve;
+          video.onerror = reject;
+          video.load();
+        });
+        
+        const totalDurationMs = video.duration * 1000;
+        const totalSeconds = Math.floor(video.duration);
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = totalSeconds % 60;
+        const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+        // Notify SceneCollectionView with video data via postMessage
+        console.log('SettingsView: Sending loadReplayFromBase64 message with video data...');
+        this.streamlabs.postMessage('loadReplayFromBase64', { 
+          base64: base64,
+          mimeType: replayFile.type || 'video/mp4',
+          fileName: replayFile.name
+        });
+        console.log('SettingsView: postMessage sent, waiting for response...');
+
+        // Wait for SceneCollectionView to signal video is loaded before proceeding
+        await new Promise((resolve) => {
+          // Store resolver for the onMessage handler to call
+          this._videoLoadedResolve = resolve;
+          
+          // Timeout fallback after 30 seconds (large videos take time to process)
+          setTimeout(() => {
+            if (this._videoLoadedResolve) {
+              console.warn('SettingsView: Timeout waiting for video loaded confirmation');
+              this._videoLoadedResolve = null;
+              resolve();
+            }
+          }, 30000);
+        });
+        
+        // Ensure replay buffer is enabled and started for the export
+        const enabled = await this.streamlabsOBS.v1.Replay.getEnabled();
+        if (!enabled) {
+          await this.streamlabsOBS.v1.Replay.setEnabled(true);
         }
+        
+        // Check current buffer state
+        let state = await this.streamlabsOBS.v1.Replay.getState();
+        
+        // Stop buffer if running (required before setDuration)
+        if (state.status === 'running' || state.status === 'stopping') {
+          if (state.status === 'running') {
+            await this.streamlabsOBS.v1.Replay.stopBuffer();
+            console.log('Replay buffer stop requested for export');
+          }
+          
+          // Poll until buffer is actually stopped
+          let attempts = 0;
+          const maxAttempts = 20; // 10 seconds max
+          while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            state = await this.streamlabsOBS.v1.Replay.getState();
+            console.log('Polling buffer state:', state.status);
+            if (state.status === 'offline' || state.status === 'stopped') {
+              console.log('Replay buffer fully stopped');
+              break;
+            }
+            attempts++;
+          }
+        }
+        
+        // Set the replay buffer duration to match video duration
+        await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
+        console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+
+        
+        // Start the buffer
+        await this.streamlabsOBS.v1.Replay.startBuffer();
+        console.log('Replay buffer started for export');
+        
+        // Set up playback state (similar to startSceneCycling but without cycling)
+        this.isRecordingScenes = true;
+        this.isExporting = false; // Loading complete, now recording
+        this.playbackProgress = 0;
+        this.playbackStartTime = performance.now();
+        this.playbackTotalDuration = totalDurationMs;
+        
+        // Show notification with duration
+        this.pushNotification('INFO', `📤 Exporting scene: ${durationStr}`);
+        
+        // Append video to DOM (hidden) to ensure it persists during navigation
+        video.style.position = 'absolute';
+        video.style.left = '-9999px';
+        video.style.visibility = 'hidden';
+        document.body.appendChild(video);
+        
+        // Listen for video end to stop recording
+        video.onended = async () => {
+          console.log('Export video ended, stopping recording');
+          this.isRecordingScenes = false;
+          
+          // Cancel progress animation
+          if (this.playbackAnimationId) {
+            cancelAnimationFrame(this.playbackAnimationId);
+            this.playbackAnimationId = null;
+          }
+          
+          // Save the replay buffer
+          this.streamlabsOBS.v1.Replay.save();
+          
+          // Wait for replay to be saved
+          await new Promise(resolve => {
+            this.replaySaveResolver = resolve;
+            setTimeout(() => {
+              if (this.replaySaveResolver) {
+                this.replaySaveResolver();
+                this.replaySaveResolver = null;
+              }
+            }, 10000);
+          });
+          
+          // Show success notification
+          this.pushNotification('SUCCESS', `✅ Export completed successfully!`);
+          
+          // Display the exported replay on the plane
+          await this.displayReplayOnPlane();
+          
+          // Navigate to editor after export completes
+          if (this.streamlabsOBS.v1.App) {
+            this.streamlabsOBS.v1.App.navigate('Editor');
+          }
+          
+          // Cleanup video element - remove from DOM
+          video.pause();
+          if (video.parentNode) {
+            video.parentNode.removeChild(video);
+          }
+          URL.revokeObjectURL(localBlobUrl);
+        };
+        
+        // Track video progress
+        video.ontimeupdate = () => {
+          if (video.duration) {
+            this.playbackElapsed = video.currentTime * 1000;
+            this.playbackProgress = (video.currentTime / video.duration) * 100;
+            //console.log(`Video progress: ${video.currentTime.toFixed(1)}s / ${video.duration.toFixed(1)}s (${this.playbackProgress.toFixed(1)}%)`);
+          }
+        };
+        
+        // Also listen for other video events for debugging
+        //video.onpause = () => console.log('Video paused');
+        //video.onplay = () => console.log('Video playing');
+        video.onerror = (e) => console.error('Video error:', e);
+        
+        // send postMessage to start playback in SceneCollectionView.vue
+        this.streamlabs.postMessage('startVideoSourcePlaybackInBrowserSource', { isVideoSourceInBrowserSourceLoaded: true });
+        // Start video playback (needed to track progress)
+        await video.play();
+        console.log('Export video playing:', video.videoWidth, 'x', video.videoHeight, 'duration:', video.duration);
+        
+        // Store video element for potential cleanup
+        this._exportVideo = video;
+        
       } catch (error) {
-        console.error('SettingsView: Error adding source to scene:', error);
-        alert('Failed to add source to scene. Please try again.');
+        console.error('Error exporting replay to scene:', error);
+        this.pushNotification('WARNING', `⚠️ Failed to export replay`);
+        this.isRecordingScenes = false;
+        this.isExporting = false;
       }
     },
-
   
     openExternalLink(url) {
       if (this.streamlabsOBS && this.streamlabsOBS.v1 && this.streamlabsOBS.v1.External) {
@@ -1898,6 +2173,7 @@ export default {
     // Scene cycling methods
     confirmStartRecording() {
       this.showRecordingModal = false;
+      this.isStartingRecording = true;
       this.startSceneCycling();
     },
 
@@ -1912,16 +2188,38 @@ export default {
     async startSceneCycling() {
       if (this.playableScenes.length <= 1) return;
       
+      // Capture scene snapshot at start to avoid race conditions with computed property
+      this.scenesToCycle = [...this.playableScenes];
+      const sceneCount = this.scenesToCycle.length;
+      
+      console.log('Starting scene cycling with', sceneCount, 'scenes:', this.scenesToCycle.map(s => s.name));
+      
       // Smooth scroll to top of page
       window.scrollTo({ top: 0, behavior: 'smooth' });
       
       // Calculate total duration upfront (needed for replay buffer)
       const intervalTime = this.sceneDuration + this.transitionTime;
-      const totalDurationMs = this.playableScenes.length * intervalTime;
+      const totalDurationMs = sceneCount * intervalTime;
       const totalSeconds = Math.floor(totalDurationMs / 1000);
       const mins = Math.floor(totalSeconds / 60);
       const secs = totalSeconds % 60;
       const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      
+      console.log(`Duration calculation: ${sceneCount} scenes × ${intervalTime}ms = ${totalDurationMs}ms (${durationStr})`);
+
+      // add app source to scene if not already in it
+      if(!this.existingSource) {
+        const source = await this.streamlabsOBS.v1.Sources.createAppSource(`Scene Visualizer Replay Buffer`, 'scene-collection-visualizer');
+        this.existingSource = source.id;
+
+        // Add source to first scene
+        const sceneItem = await this.streamlabsOBS.v1.Scenes.createSceneItem(
+          this.activeScenes[0].id,
+          this.existingSource
+        );
+      }
+
+      
       
       // Ensure replay buffer is enabled and started
       try {
@@ -1938,11 +2236,29 @@ export default {
         console.log('Replay buffer state:', state);
         
         // Stop buffer if running (required before setDuration)
-        if (state.status === 'running') {
-          await this.streamlabsOBS.v1.Replay.stopBuffer();
-          console.log('Replay buffer stopped');
-          // Wait for buffer to fully stop
-          await new Promise(resolve => setTimeout(resolve, 500));
+        if (state.status === 'running' || state.status === 'stopping') {
+          if (state.status === 'running') {
+            await this.streamlabsOBS.v1.Replay.stopBuffer();
+            console.log('Replay buffer stop requested');
+          }
+          
+          // Poll until buffer is actually stopped (not just 'stopping')
+          let attempts = 0;
+          const maxAttempts = 20; // 10 seconds max
+          while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            state = await this.streamlabsOBS.v1.Replay.getState();
+            console.log('Polling buffer state:', state.status);
+            if (state.status === 'offline' || state.status === 'stopped') {
+              console.log('Replay buffer fully stopped');
+              break;
+            }
+            attempts++;
+          }
+          
+          if (attempts >= maxAttempts) {
+            console.warn('Timeout waiting for replay buffer to stop');
+          }
         }
         
         // Set the replay buffer duration to match total playback time
@@ -1964,9 +2280,11 @@ export default {
         console.log('Replay buffer started');
       } catch (err) {
         console.error('Error managing replay buffer:', err);
+        this.isStartingRecording = false;
       }
       
       this.isRecordingScenes = true;
+      this.isStartingRecording = false; // Loading complete, now recording
       this.playbackProgress = 0;
       this.playbackStartTime = performance.now();
       
@@ -1977,9 +2295,19 @@ export default {
       // Start smooth progress animation
       this.animatePlaybackProgress(totalDurationMs);
       
-      // Set up interval to cycle every 5 seconds + transition duration
-      this.sceneCycleInterval = setInterval(() => {
+      // Use setTimeout for first scene to ensure it gets full duration,
+      // then setInterval for remaining scenes
+      console.log(`First scene will play for ${intervalTime}ms before cycling starts`);
+      this.sceneCycleTimeout = setTimeout(() => {
+        // After first scene's duration, cycle to next and start interval
         this.cycleToNextScene();
+        
+        // Only start interval if there are more scenes to cycle
+        if (this.isRecordingScenes && this.currentSceneIndex < this.scenesToCycle.length) {
+          this.sceneCycleInterval = setInterval(() => {
+            this.cycleToNextScene();
+          }, intervalTime);
+        }
       }, intervalTime);
     },
 
@@ -1987,6 +2315,13 @@ export default {
       const wasRecording = this.isRecordingScenes;
       this.streamlabsOBS.v1.Replay.save();
       this.isRecordingScenes = false;
+      
+      // Clear timeout for first scene
+      if (this.sceneCycleTimeout) {
+        clearTimeout(this.sceneCycleTimeout);
+        this.sceneCycleTimeout = null;
+      }
+      
       if (this.sceneCycleInterval) {
         clearInterval(this.sceneCycleInterval);
         this.sceneCycleInterval = null;
@@ -2020,7 +2355,19 @@ export default {
             }
           }, 10000);
         });
-        await this.displayReplayOnPlane();
+        //await this.displayReplayOnPlane();
+      }
+
+      // Switch back to the first scene in the collection
+      if (this.activeScenes.length > 0) {
+        const firstScene = this.activeScenes[0];
+        try {
+          await this.streamlabsOBS.v1.Scenes.makeSceneActive(firstScene.id);
+          await this.selectActiveScene(firstScene.id);
+          console.log('Switched back to first scene:', firstScene.name);
+        } catch (err) {
+          console.error('Error switching to first scene:', err);
+        }
       }
     },
     
@@ -2201,27 +2548,12 @@ export default {
       return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     },
 
-    async loadTransitionTime() {
-      try {
-        const transitions = await this.streamlabsOBS.v1.SceneTransitions.getTransitions();
-        console.log('Loaded transitions:', transitions);
-        if (transitions && transitions.length > 0) {
-          // Use the first transition's duration (active transition)
-          this.transitionTime = transitions[0].duration || 0;
-          console.log('Transition time loaded:', this.transitionTime, 'ms');
-        }
-      } catch (err) {
-        console.error('Error loading transition time:', err);
-        this.transitionTime = 0;
-      }
-    },
-
     async activateCurrentScene() {
-      const scene = this.playableScenes[this.currentSceneIndex];
+      const scene = this.scenesToCycle[this.currentSceneIndex];
       if (scene) {
         try {
           await this.streamlabsOBS.v1.Scenes.makeSceneActive(scene.id);
-          console.log('Switched to scene:', scene.name);
+          console.log('Switched to scene:', scene.name, `(${this.currentSceneIndex + 1}/${this.scenesToCycle.length})`);
           // Update the UI to reflect the new active scene
           await this.selectActiveScene(scene.id);
           //await this.reloadActiveCollection();
@@ -2232,13 +2564,16 @@ export default {
     },
 
     async cycleToNextScene() {
-      if (!this.playableScenes.length) return;
+      if (!this.scenesToCycle.length) return;
       
-      // Check if we're at the last scene
-      if (this.currentSceneIndex >= this.playableScenes.length - 1) {
-        // We've reached the last scene, stop cycling (not manual)
+      // Move to next scene first
+      this.currentSceneIndex++;
+      
+      // Check if we've gone past the last scene
+      if (this.currentSceneIndex >= this.scenesToCycle.length) {
+        // We've completed all scenes, stop cycling (not manual)
         this.stopSceneCycling(false);
-        console.log('Scene cycling complete - stopped at last scene');
+        console.log('Scene cycling complete - all scenes played');
         
         // Show success notification
         this.pushNotification('SUCCESS', `✅ Scenes finished recording successfully!`);
@@ -2253,9 +2588,35 @@ export default {
         return;
       }
       
-      // Move to next scene
-      this.currentSceneIndex++;
+      // Activate the next scene
       await this.activateCurrentScene();
+    },
+
+    // IndexedDB helpers for cross-view video sharing
+    openVideoDatabase() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open('SceneVisualizerVideos', 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains('videos')) {
+            db.createObjectStore('videos');
+          }
+        };
+      });
+    },
+
+    async storeVideoInIndexedDB(key, file) {
+      const db = await this.openVideoDatabase();
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(['videos'], 'readwrite');
+        const store = transaction.objectStore('videos');
+        const request = store.put(file, key);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => db.close();
+      });
     },
 
   }
@@ -2263,6 +2624,8 @@ export default {
 </script>
 
 <style lang="less" scoped>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100;300;400;500;700;900&display=swap');
+
 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap');
 @import '@/styles/custom-icons.less';
 @import '@/styles/themes.g.less';
@@ -2282,6 +2645,22 @@ export default {
   max-width: 1200px;
   margin: 0 auto;
 }
+
+/* Disclaimer */
+.disclaimer {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 1rem 1.5rem;
+  background: var(--dashboard-bg);
+  text-align: center;
+  color: #888;
+  font-family: 'Inter', Arial, sans-serif;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  z-index: 100;
+}
+
 
 /* Debug Icon Grid */
 .debug-icon-section {
@@ -3212,12 +3591,15 @@ export default {
     background: var(--section);
     border: 1px solid var(--border);
     border-radius: 8px;
-    /* margin-bottom: 1rem; */
     overflow: hidden;
-    /* display: flex; */
-    /* width: 100%; */
     flex: 1;
     flex-direction: row;
+}
+
+.playback-controls-section.full-width {
+    width: 100%;
+    flex-basis: 100%;
+    margin-top: 0.5rem;
 }
 
 .playback-controls-header {
@@ -3270,6 +3652,22 @@ export default {
 
 .playback-btn span {
   font-size: 1rem;
+}
+
+.spinner-small {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(128, 245, 210, 0.3);
+  border-top-color: #80f5d2;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .replay-btn {
