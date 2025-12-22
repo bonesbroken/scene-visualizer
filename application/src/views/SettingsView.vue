@@ -45,11 +45,6 @@
       </div>
       
       <div class="action-buttons-row">
-        <button class="view-collections-btn" @click="showCollectionsModal = true">
-          <span class="fas fa-folder"></span>
-          View Scene Collections
-        </button>
-        
         <!-- Notifications Demo Section -->
         <div class="notifications-demo" style="display: none">
           <button class="notification-btn info" @click="pushNotification('INFO')">
@@ -69,7 +64,7 @@
           <button 
             class="playback-btn play-scenes-btn" 
             :class="{ active: isRecordingScenes }"
-            :disabled="playableScenes.length <= 1 || isReplayPlaying || isStartingRecording"
+            :disabled="playableScenes.length <= 1 || isPreviewPlaying || isStartingRecording"
             @click="isRecordingScenes ? stopSceneCycling(true) : showRecordingModal = true"
           >
             <span v-if="isStartingRecording" class="spinner-small"></span>
@@ -77,19 +72,19 @@
             {{ isStartingRecording ? 'Starting...' : (isRecordingScenes ? 'Stop' : 'Record Scenes') }}
           </button>
           <button 
-            v-if="lastReplayFileId"
-            class="playback-btn replay-btn"
-            :class="{ active: isReplayPlaying }"
+            v-if="lastReplayBufferFileId"
+            class="playback-btn preview-btn"
+            :class="{ active: isPreviewPlaying }"
             :disabled="isRecordingScenes"
-            @click="isReplayPlaying ? stopReplay() : displayReplayOnPlane()"
+            @click="isPreviewPlaying ? stopPreview() : displayPreviewOnPlane()"
           >
-            <span :class="isReplayPlaying ? 'fa-solid fa-stop' : 'icon-replay-buffer'"></span>
-            {{ isReplayPlaying ? 'Stop' : 'Replay' }}
+            <span :class="isPreviewPlaying ? 'fa-solid fa-stop' : 'icon-replay-buffer'"></span>
+            {{ isPreviewPlaying ? 'Stop' : 'Preview' }}
           </button>
           <button 
-            v-if="lastReplayFileId"
+            v-if="lastReplayBufferFileId"
             class="playback-btn export-btn"
-            :disabled="isReplayPlaying || isRecordingScenes || isExporting"
+            :disabled="isPreviewPlaying || isRecordingScenes || isExporting"
             @click="exportReplayToScene()"
           >
             <span v-if="isExporting" class="spinner-small"></span>
@@ -99,14 +94,23 @@
         </div>
       </div>
       <!-- Playback Controls Section - Full Width Row -->
-      <div v-if="isRecordingScenes || isReplayPlaying" class="playback-controls-section full-width">
+      <div v-if="isRecordingScenes || isPreviewPlaying" class="playback-controls-section full-width">
         <div class="playback-progress-section">
-          <span :class="isReplayPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
+          <span :class="isPreviewPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
           <div class="playback-progress-bar">
             <div 
               class="playback-progress-fill" 
               :style="{ width: playbackProgress + '%' }"
             ></div>
+            <!-- Scene divider lines -->
+            <template v-if="isRecordingScenes && scenesToCycle.length > 1">
+              <div 
+                v-for="n in (scenesToCycle.length - 1)" 
+                :key="n" 
+                class="scene-divider" 
+                :style="{ left: (n / scenesToCycle.length * 100) + '%' }"
+              ></div>
+            </template>
           </div>
           <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
         </div>
@@ -124,6 +128,9 @@
         <div class="column scenes-column">
           <div class="column-header">
             <span class="section-name">Active Scene Collection ({{ playableScenes.length }}/{{ activeScenes.length }} Scenes)</span>
+            <button class="view-collections-btn icon-only" @click="showCollectionsModal = true" title="View Scene Collections">
+              <span class="fas fa-folder"></span>
+            </button>
           </div>
           <div class="column-content">
             <div 
@@ -136,7 +143,7 @@
               <button 
                 class="scene-visibility-btn"
                 :class="{ 'excluded': excludedSceneIds[scene.id] }"
-                :disabled="isRecordingScenes || isReplayPlaying"
+                :disabled="isRecordingScenes || isPreviewPlaying"
                 @click.stop="toggleSceneExclusion(scene.id)"
                 :title="excludedSceneIds[scene.id] ? 'Include in recording' : 'Exclude from playback'"
               >
@@ -288,15 +295,6 @@
           <span class="notif-message">{{ notif.message }}</span>
           <span class="notif-id">#{{ notif.id }}</span>
           <button 
-            v-if="notif.message && notif.message.includes('Replay loaded')"
-            class="play-replay-btn"
-            @click.stop="displayReplayOnPlane"
-            title="Play Replay"
-          >
-            <span class="icon-playing"></span>
-            Play
-          </button>
-          <button 
             v-if="notif.unread" 
             class="mark-read-btn" 
             @click.stop="markNotificationAsRead(notif.id)"
@@ -321,9 +319,10 @@
           <div class="tree-container">
             <div v-for="collection in sceneCollectionsSchema" :key="collection.id" class="collection">
               <div class="collection-header" @click="toggleCollection(collection.id)">
-                <span class="toggle-icon">{{ expandedCollections[collection.id] ? '▼' : '▶' }}</span>
                 <span class="collection-icon" :class="expandedCollections[collection.id] ? 'fas fa-folder-open' : 'fas fa-folder'"></span>
                 <span class="collection-name">{{ collection.name }}</span>
+                <span class="toggle-icon icon-down" :class="{ 'rotated': expandedCollections[collection.id] }"></span>
+                
               </div>
               
               <div v-if="expandedCollections[collection.id]" class="collection-content">
@@ -331,7 +330,7 @@
                 <div class="two-column-layout">
                   <!-- Left column: Scenes list -->
                   <div class="column scenes-column">
-                    <div class="column-header">
+                    <div class="column-header column-header-collection">
                       <span class="section-name">Scenes ({{ collection.scenes?.length || 0 }})</span>
                     </div>
                     <div class="column-content">
@@ -343,7 +342,6 @@
                         @click="selectScene(collection.id, scene.id)"
                       >
                         <span class="item-name">{{ scene.name }}</span>
-                        <span class="item-count" v-if="scene.sceneItems?.length">{{ scene.sceneItems.length }}</span>
                       </div>
                       <div v-if="!collection.scenes?.length" class="empty-state">
                         No scenes
@@ -353,7 +351,7 @@
                   
                   <!-- Right column: Sources for selected scene -->
                   <div class="column sources-column">
-                    <div class="column-header">
+                    <div class="column-header column-header-collection">
                       <span class="section-name">Sources</span>
                     </div>
                     <div class="column-content">
@@ -365,7 +363,6 @@
                         >
                           <span class="item-icon" :class="isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? getSourceIcon(item.sourceId, collection.sources) : ''">{{ isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? '' : getSourceIcon(item.sourceId, collection.sources) }}</span>
                           <span class="item-name">{{ getSourceName(item.sourceId, collection.sources) }}</span>
-                          <span class="item-type">{{ getSourceType(item.sourceId, collection.sources) }}</span>
                         </div>
                         <div v-if="!getSelectedSceneItems(collection)?.length" class="empty-state">
                           No sources in this scene
@@ -428,22 +425,24 @@
             </div>
             <div class="setting-info">
               <span class="icon-information"></span>
-              Each scene will be shown for {{ sceneDuration / 1000 }}s plus {{ transitionTime / 1000 }}s transition time.
-            </div>
-            <div class="setting-info">
-              <span class="icon-time"></span>
-              Total expected video duration: {{ expectedRecordingDuration }}
+              Each scene will be shown for {{ (sceneDuration / 1000).toFixed(1) }}s plus {{ (transitionTime / 1000).toFixed(1) }}s transition time, for a {{ expectedRecordingDuration }} video duration.
             </div>
           </div>
         </div>
         <div class="modal-footer">
-          <button class="modal-btn cancel-btn" @click="showRecordingModal = false">
-            Cancel
-          </button>
-          <button class="modal-btn start-btn" @click="confirmStartRecording">
-            <span class="icon-playing"></span>
-            Start Recording
-          </button>
+          <div v-if="outputFilePath" class="output-path-note">
+            <span class="icon-folder"></span>
+            Videos output destination: {{ outputFilePath }}
+          </div>
+          <div class="modal-actions">
+            <button class="modal-btn cancel-btn" @click="showRecordingModal = false">
+              Cancel
+            </button>
+            <button class="modal-btn start-btn" @click="confirmStartRecording">
+              <span class="icon-playing"></span>
+              Start Recording
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -458,6 +457,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
+import gsap from 'gsap';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -520,6 +520,7 @@ export default {
       sceneCycleInterval: null,
       currentSceneIndex: 0,
       scenesToCycle: [], // Snapshot of scenes to play during a cycle
+      recordingTimeline: [], // Timeline of recording events for display
       sceneDuration: 5000,
       transitionTime: 300,
       playbackProgress: 0,
@@ -530,9 +531,11 @@ export default {
       excludedSceneIds: {}, // Track which scene IDs are excluded from cycling
       
       // Replay buffer
-      lastReplayFileId: null,
+      lastReplayBufferFileId: null,
       replaySaveResolver: null,
-      isReplayPlaying: false,
+      isPreviewPlaying: false,
+      isExportingSave: false, // Flag to prevent updating lastReplayBufferFileId during export
+      outputFilePath: '',
       
       // Canvas dimensions (1920x1080 base resolution)
       canvasBaseWidth: 1920,
@@ -1172,7 +1175,7 @@ export default {
     async loadObsSettings() {
       try {
         const settings = await this.streamlabsOBS.v1.ObsSettings.getSettings();
-        //console.log('OBS Settings:', settings);
+        console.log('OBS Settings:', settings);
         
         // Parse Video.Base resolution (e.g., "1920x1080")
         if (settings?.Video?.Base) {
@@ -1182,6 +1185,11 @@ export default {
             this.canvasBaseHeight = height;
             //console.log(`Canvas resolution set to ${width}x${height}`);
           }
+        }
+        
+        // Get output file path
+        if (settings?.Output?.FilePath) {
+          this.outputFilePath = settings.Output.FilePath;
         }
       } catch (err) {
         console.error('Error loading OBS settings:', err);
@@ -1498,7 +1506,7 @@ export default {
       // Remove duplicates based on source name (H/V versions have same name)
       const seenNames = new Set();
       return items.filter(item => {
-        console.log(item);
+        //console.log(item);
         const sourceName = this.getSourceName(item.sourceId, collection.sources);
         if (seenNames.has(sourceName)) {
           return false;
@@ -1618,6 +1626,23 @@ export default {
       console.log('SettingsView: Streamlabs initialized with receiveEvents: true');
       console.log('SettingsView: User data:', data);
       
+      // Load user preferences
+      try {
+        const userPreferences = await this.streamlabs.userSettings.get('userPreferences');
+        console.log('SettingsView: Raw userPreferences response:', userPreferences, typeof userPreferences);
+        if (userPreferences) {
+          console.log('SettingsView: Loaded user preferences:', userPreferences);
+          // Handle both direct value and nested value cases
+          const transitionValue = userPreferences.transitionTime ?? userPreferences?.value?.transitionTime;
+          if (transitionValue !== undefined) {
+            this.transitionTime = transitionValue;
+            console.log('SettingsView: Set transitionTime to:', this.transitionTime);
+          }
+        }
+      } catch (err) {
+        console.log('SettingsView: No saved preferences found or error loading:', err);
+      }
+      
       // Get streamer name from Twitch profile
       if (data && data.profiles && data.profiles.twitch && data.profiles.twitch.name) {
         this.streamerName = data.profiles.twitch.name;
@@ -1685,18 +1710,41 @@ export default {
 
           this.streamlabsOBS.v1.Replay.fileSaved(async (file) => {
             console.log('New replay saved', file);
-            this.lastReplayFileId = file.id;
             
-            // Store file to IndexedDB for cross-view access
-            try {
-              const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(file.id);
-              console.log('Got replay file:', replayFile.name, 'size:', replayFile.size);
+            // Only update lastReplayBufferFileId when not exporting (i.e., from stopSceneCycling)
+            if (!this.isExportingSave) {
+              this.lastReplayBufferFileId = file.id;
               
-              // Store in IndexedDB
-              await this.storeVideoInIndexedDB('latestReplay', replayFile);
-              console.log('Replay stored in IndexedDB');
-            } catch (err) {
-              console.error('Error storing replay in IndexedDB:', err);
+              // Store file to IndexedDB for cross-view access
+              try {
+                const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(file.id);
+                console.log('Got replay file:', replayFile.name, 'size:', replayFile.size);
+                
+                // Get video duration
+                const tempVideo = document.createElement('video');
+                const blobUrl = URL.createObjectURL(replayFile);
+                tempVideo.src = blobUrl;
+                tempVideo.muted = true;
+                await new Promise((resolve, reject) => {
+                  tempVideo.onloadedmetadata = resolve;
+                  tempVideo.onerror = reject;
+                  tempVideo.load();
+                });
+                const durationSecs = tempVideo.duration;
+                const mins = Math.floor(durationSecs / 60);
+                const secs = Math.floor(durationSecs % 60);
+                const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                console.log('Replay duration:', durationStr, `(${durationSecs.toFixed(2)}s)`);
+                URL.revokeObjectURL(blobUrl);
+                
+                // Store in IndexedDB
+                await this.storeVideoInIndexedDB('latestReplay', replayFile);
+                console.log('Replay stored in IndexedDB');
+              } catch (err) {
+                console.error('Error storing replay in IndexedDB:', err);
+              }
+            } else {
+              console.log('Skipping lastReplayBufferFileId update (export save)');
             }
             
             // Resolve the save promise when file is saved
@@ -1898,7 +1946,7 @@ export default {
     },
 
     async exportReplayToScene() {
-      if (!this.lastReplayFileId || !this.activeScenes.length || !this.existingSource) {
+      if (!this.lastReplayBufferFileId || !this.activeScenes.length || !this.existingSource) {
         console.error('No replay file or scenes available');
         return;
       }
@@ -1919,7 +1967,7 @@ export default {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         
         // Get the replay file and send to SceneCollectionView via postMessage
-        const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayFileId);
+        const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayBufferFileId);
         console.log('exportReplayToScene', replayFile);
         
         // Convert file to base64 for postMessage (IndexedDB not shared between views)
@@ -2050,7 +2098,8 @@ export default {
             this.playbackAnimationId = null;
           }
           
-          // Save the replay buffer
+          // Save the replay buffer (mark as export save to prevent updating lastReplayBufferFileId)
+          this.isExportingSave = true;
           this.streamlabsOBS.v1.Replay.save();
           
           // Wait for replay to be saved
@@ -2064,11 +2113,14 @@ export default {
             }, 10000);
           });
           
+          // Reset export flag
+          this.isExportingSave = false;
+          
           // Show success notification
           this.pushNotification('SUCCESS', `✅ Export completed successfully!`);
           
-          // Display the exported replay on the plane
-          await this.displayReplayOnPlane();
+          // Display the exported preview on the plane
+          await this.displayPreviewOnPlane();
           
           // Navigate to editor after export completes
           if (this.streamlabsOBS.v1.App) {
@@ -2171,9 +2223,22 @@ export default {
     },
 
     // Scene cycling methods
-    confirmStartRecording() {
+    async confirmStartRecording() {
       this.showRecordingModal = false;
       this.isStartingRecording = true;
+      
+      // Save transitionTime to user preferences
+      try {
+        const currentPrefs = await this.streamlabs.userSettings.get('userPreferences') || {};
+        await this.streamlabs.userSettings.set('userPreferences', {
+          ...currentPrefs,
+          transitionTime: this.transitionTime
+        });
+        console.log('SettingsView: Saved transitionTime to preferences:', this.transitionTime);
+      } catch (err) {
+        console.error('SettingsView: Error saving preferences:', err);
+      }
+      
       this.startSceneCycling();
     },
 
@@ -2206,6 +2271,29 @@ export default {
       const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       
       console.log(`Duration calculation: ${sceneCount} scenes × ${intervalTime}ms = ${totalDurationMs}ms (${durationStr})`);
+
+      // Generate timeline of recording events
+      this.recordingTimeline = [];
+      let currentTimeMs = 0;
+      this.scenesToCycle.forEach((scene, index) => {
+        if (index === 0) {
+          this.recordingTimeline.push({
+            time: this.formatPlaybackTime(currentTimeMs),
+            event: `Recording starts on ${scene.name}`
+          });
+        } else {
+          this.recordingTimeline.push({
+            time: this.formatPlaybackTime(currentTimeMs),
+            event: `Transition to ${scene.name}`
+          });
+        }
+        currentTimeMs += intervalTime;
+      });
+      this.recordingTimeline.push({
+        time: this.formatPlaybackTime(currentTimeMs),
+        event: 'Save recording'
+      });
+      console.table(this.recordingTimeline);
 
       // add app source to scene if not already in it
       if(!this.existingSource) {
@@ -2355,7 +2443,7 @@ export default {
             }
           }, 10000);
         });
-        //await this.displayReplayOnPlane();
+        //await this.displayPreviewOnPlane();
       }
 
       // Switch back to the first scene in the collection
@@ -2371,17 +2459,23 @@ export default {
       }
     },
     
-    async displayReplayOnPlane() {
-      if (!this.lastReplayFileId) {
+    async displayPreviewOnPlane() {
+      if (!this.lastReplayBufferFileId) {
         console.warn('No replay file ID available');
         return;
+      }
+      
+      // Display recording timeline
+      if (this.recordingTimeline.length > 0) {
+        console.log('Recording Timeline:');
+        console.table(this.recordingTimeline);
       }
       
       // Smooth scroll to top of page
       window.scrollTo({ top: 0, behavior: 'smooth' });
       
       try {
-        const file = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayFileId);
+        const file = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayBufferFileId);
         console.log('Got replay file!', file.name);
         
         // Create a blob URL from the File object
@@ -2404,8 +2498,8 @@ export default {
         
         // Listen for video end to return to wireframe view
         video.onended = () => {
-          console.log('Replay video ended, returning to wireframe');
-          this.isReplayPlaying = false;
+          console.log('Preview video ended, returning to wireframe');
+          this.isPreviewPlaying = false;
           this.playbackProgress = 0;
           this.playbackElapsed = 0;
           this.playbackTotalDuration = 0;
@@ -2421,7 +2515,7 @@ export default {
         };
         
         // Start playing
-        this.isReplayPlaying = true;
+        this.isPreviewPlaying = true;
         this.playbackProgress = 0;
         this.playbackElapsed = 0;
         // Set total duration from video (metadata already loaded at this point)
@@ -2458,6 +2552,26 @@ export default {
           
           // Re-fit camera to the updated plane
           this.fitToRect(this._threePlane);
+          
+          // Animate camera from z=-4 to current position over 3 seconds
+          if (this._threeCamera && this._threeControls) {
+            const targetPosition = this._threeCamera.position.clone();
+            // Move camera back by 4 units for the start position
+            this._threeCamera.position.z = targetPosition.z + 4;
+            this._threeControls.setPosition(this._threeCamera.position.x, this._threeCamera.position.y, this._threeCamera.position.z, false);
+            
+            // Animate to target position
+            gsap.to(this._threeCamera.position, {
+              z: targetPosition.z,
+              duration: 3,
+              ease: 'power4.out',
+              onUpdate: () => {
+                if (this._threeControls) {
+                  this._threeControls.setPosition(this._threeCamera.position.x, this._threeCamera.position.y, this._threeCamera.position.z, false);
+                }
+              }
+            });
+          }
         }
         
         this.pushNotification('SUCCESS', `🎬 Replay loaded on canvas!`);
@@ -2511,15 +2625,15 @@ export default {
       console.log('Restored wireframe view');
     },
     
-    stopReplay() {
-      if (!this.isReplayPlaying) return;
+    stopPreview() {
+      if (!this.isPreviewPlaying) return;
       
-      this.isReplayPlaying = false;
+      this.isPreviewPlaying = false;
       this.playbackProgress = 0;
       this.playbackElapsed = 0;
       this.playbackTotalDuration = 0;
       this.restoreWireframeView();
-      console.log('Replay stopped manually');
+      console.log('Preview stopped manually');
     },
 
     animatePlaybackProgress(totalDurationMs) {
@@ -2847,12 +2961,18 @@ export default {
 .column-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: .5rem;
-    padding: .75rem 1rem;
+    padding: 0.75rem 0;
+    min-height: 60px;
     /* border-bottom: 1px solid var(--border); */
     font-weight: 500;
     color: var(--section-wrapper);
     background: var(--dashboard-bg);
+}
+
+.column-header-collection {
+  padding: 0.75rem 1rem;
 }
 .column-content {
   flex: 1;
@@ -3344,7 +3464,7 @@ export default {
     padding: .5rem .75rem;
     background: none;
     border: none;
-    border-radius: 8px;
+    border-radius: 4px;
     color: var(--button);
     width: -moz-fit-content;
     width: fit-content;
@@ -3415,7 +3535,7 @@ export default {
   gap: 0.35rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 4px;
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
@@ -3564,28 +3684,6 @@ export default {
   color: var(--action-button-text);
 }
 
-.play-replay-btn {
-  background: transparent;
-  border: 1px solid var(--teal);
-  color: var(--teal);
-  cursor: pointer;
-  padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.7rem;
-  font-family: 'Roboto', Arial, sans-serif;
-  transition: all 0.2s ease;
-}
-.play-replay-btn:hover {
-  background: var(--teal);
-  color: var(--action-button-text);
-}
-.play-replay-btn span {
-  font-size: 0.75rem;
-}
-
 /* Playback Controls Section */
 .playback-controls-section {
     background: var(--section);
@@ -3622,21 +3720,20 @@ export default {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: none;
+  border-radius: 4px;
   font-size: 0.95rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: 'Roboto', Arial, sans-serif;
-  background: var(--teal-semi);
-  color: var(--teal);
+  background: var(--button);
+  color: var(--link);
 }
 
 .playback-btn:hover:not(:disabled) {
-  background: var(--teal);
-  color: var(--action-button-text);
-  border-color: var(--teal);
+  background: var(--button-hover);
+  color: var(--link-active);
 }
 
 .playback-btn:disabled {
@@ -3670,12 +3767,12 @@ export default {
   }
 }
 
-.replay-btn {
+.preview-btn {
   background: rgba(56, 189, 248, 0.1);
   color: rgb(56, 189, 248);
   border-color: rgba(56, 189, 248, 0.3);
 }
-.replay-btn:hover:not(:disabled) {
+.preview-btn:hover:not(:disabled) {
   background: rgb(56, 189, 248);
   color: #000;
   border-color: rgb(56, 189, 248);
@@ -3720,18 +3817,29 @@ export default {
 }
 
 .playback-progress-bar {
-  height: 6px;
+  position: relative;
+  height: 12px;
   background: var(--border);
-  border-radius: 3px;
+  border-radius: 6px;
   overflow: hidden;
   min-width: 50px;
   flex: 1;
 }
 
+.scene-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--paragraph);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .playback-progress-fill {
   height: 100%;
   background: var(--teal);
-  border-radius: 3px;
+  border-radius: 6px;
   /* No transition - animated smoothly via requestAnimationFrame */
 }
 
@@ -3899,10 +4007,26 @@ export default {
 
 .modal-footer {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
   gap: 0.75rem;
   padding: 1rem 1.5rem;
   border-top: 1px solid var(--border);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.output-path-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--paragraph);
+  opacity: 0.8;
+  word-break: break-all;
 }
 
 .modal-btn {
