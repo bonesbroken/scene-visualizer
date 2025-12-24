@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
+import { applyCameraIntroAnimation } from '@/utils/cameraAnimations';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -93,15 +94,10 @@ export default {
         // Register message listener once for receiving start playback command
         this.streamlabs.onMessage(async (event) => {
           // Log ALL incoming messages for debugging (temporarily)
-          this.remoteLog('log', 'onMessage received:', event.type);
           
           if (event.type === 'loadReplayFromBase64') {
-            this.remoteLog('log', 'Processing loadReplayFromBase64, data length:', event.data.base64?.length || 0);
+            //this.remoteLog('log', 'Processing loadReplayFromBase64, data length:', event.data.base64?.length || 0);
             await this.loadAndDisplayReplayFromBase64(event.data);
-          } else if (event.type === 'loadReplayFromIndexedDB') {
-            // Legacy fallback
-            this.remoteLog('log', 'Processing loadReplayFromIndexedDB...');
-            await this.loadAndDisplayReplay();
           } else if (event.type === 'startVideoSourcePlaybackInBrowserSource') {
             this.remoteLog('log', 'Processing startVideoSourcePlaybackInBrowserSource...');
             if (event.data.isVideoSourceInBrowserSourceLoaded === true && this.pendingVideo) {
@@ -126,53 +122,45 @@ export default {
     },
     
     async startVideoPlayback() {
-      if (!this.pendingVideo) return;
+      if (!this.pendingVideo) {
+        console.warn('SceneCollectionView: startVideoPlayback called but no pendingVideo');
+        return;
+      }
       
       const video = this.pendingVideo;
+      this.pendingVideo = null;
       
       try {
-        // Start playing
+        this._threeRenderer.setClearColor(0x000000, 1); // Black background
+        this._threeScene.background = new THREE.Color(0x000000); // Black background
+        // Start playing and animate camera simultaneously
         this.isPlaying = true;
         this.videoDuration = video.duration * 1000;
+        
+        // Start camera animation FIRST (it will animate while video starts)
+        this.remoteLog('log', 'Starting camera animation and video playback');
+        applyCameraIntroAnimation(this._threeCamera, this._threeControls);
+        
+        // Start video playback
         await video.play();
-        console.log('SceneCollectionView: Video playing:', video.videoWidth, 'x', video.videoHeight);
+        this.remoteLog('log', 'Video playing:', video.videoWidth, 'x', video.videoHeight);
+        
+        // Listen for video end and notify SettingsView
+        video.onended = () => {
+          this.remoteLog('log', 'Playback ended!');
+          this.isPlaying = false;
+          // Signal to SettingsView that playback has finished
+          this.streamlabs.postMessage('videoPlaybackEnded', { ended: true });
+          this._threeRenderer.setClearColor(0x000000, 0); // Black background
+          this._threeScene.background = null; // Black background
+          this._threePlane.visible = false;
+        };
         
         // Store video element for cleanup
         this._video = video;
-        this.pendingVideo = null;
-        
-        // Dispose old texture if exists
-        if (this._threeTexture) {
-          this._threeTexture.dispose();
-        }
-        
-        // Create VideoTexture from the video element
-        this._threeTexture = markRaw(new THREE.VideoTexture(video));
-        this._threeTexture.minFilter = THREE.LinearFilter;
-        this._threeTexture.magFilter = THREE.LinearFilter;
-        this._threeTexture.format = THREE.RGBAFormat;
-        
-        // Update the plane material with the new video texture
-        if (this._threePlane) {
-          this._threePlane.visible = true; // Show plane now that video is ready
-          this._threePlane.material.map = this._threeTexture;
-          this._threePlane.material.color = new THREE.Color(0xffffff);
-          this._threePlane.material.needsUpdate = true;
-          
-          // Update plane geometry to match video aspect ratio
-          const videoAspect = video.videoWidth / video.videoHeight;
-          const planeHeight = 2;
-          const planeWidth = planeHeight * videoAspect;
-          
-          this._threePlane.geometry.dispose();
-          this._threePlane.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-          
-          // Re-fit camera to the updated plane
-          this.fitToRect(this._threePlane);
-        }
         
         this.loading = false;
-        console.log('SceneCollectionView: Replay loaded on canvas!');
+        this.remoteLog('log', 'Playback started!');
       } catch (err) {
         this.remoteLog('error', 'Error starting video playback:', err.message);
         this.error = 'Failed to start video playback';
@@ -200,9 +188,9 @@ export default {
       this._threeCamera = markRaw(new THREE.PerspectiveCamera(50, aspect, 0.1, 1000));
       this._threeCamera.position.z = 3;
       
-      // Create renderer with transparent background
-      this._threeRenderer = markRaw(new THREE.WebGLRenderer({ antialias: true, alpha: true }));
-      this._threeRenderer.setClearColor(0x000000, 0); // Fully transparent
+      // Create renderer with clear background
+      this._threeRenderer = markRaw(new THREE.WebGLRenderer({ antialias: true }));
+      this._threeRenderer.setClearColor(0x000000, 0); // Clear background
       this._threeRenderer.setSize(width, height);
       this._threeRenderer.setPixelRatio(window.devicePixelRatio);
       container.appendChild(this._threeRenderer.domElement);
@@ -417,7 +405,7 @@ export default {
           return;
         }
         
-        this.remoteLog('log', 'Converting base64 to blob, length:', base64.length);
+        //this.remoteLog('log', 'Converting base64 to blob, length:', base64.length);
         
         // Convert base64 back to blob
         const binaryString = atob(base64);
@@ -427,7 +415,7 @@ export default {
         }
         const blob = new Blob([bytes], { type: mimeType || 'video/mp4' });
         
-        this.remoteLog('log', 'Created blob, size:', blob.size);
+        //this.remoteLog('log', 'Created blob, size:', blob.size);
         const videoUrl = URL.createObjectURL(blob);
         
         // Create video element
@@ -448,13 +436,52 @@ export default {
           video.load();
         });
         
-        this.remoteLog('log', 'Video ready, sending confirmation');
+        this.remoteLog('log', 'Video data loaded, setting up Three.js');
+        
+        // === SET UP THREE.JS BEFORE SIGNALING READY ===
+        // This ensures the first frame is rendered when replay buffer starts recording
+        
+        // Dispose old texture if exists
+        if (this._threeTexture) {
+          this._threeTexture.dispose();
+        }
+        
+        // Create VideoTexture from the video element
+        this._threeTexture = markRaw(new THREE.VideoTexture(video));
+        this._threeTexture.minFilter = THREE.LinearFilter;
+        this._threeTexture.magFilter = THREE.LinearFilter;
+        this._threeTexture.format = THREE.RGBAFormat;
+        
+        // Update the plane material with the new video texture
+        if (this._threePlane) {
+          this._threePlane.visible = true; // Show plane now that video is ready
+          this._threePlane.material.map = this._threeTexture;
+          this._threePlane.material.color = new THREE.Color(0xffffff);
+          this._threePlane.material.needsUpdate = true;
+          
+          // Update plane geometry to match video aspect ratio
+          const videoAspect = video.videoWidth / video.videoHeight;
+          const planeHeight = 2;
+          const planeWidth = planeHeight * videoAspect;
+          
+          this._threePlane.geometry.dispose();
+          this._threePlane.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+          
+          // Re-fit camera to the target position (animation will start from further back)
+          this.fitToRect(this._threePlane);
+          
+          // Wait a frame for camera position to be fully set
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          
+          console.log('SceneCollectionView: Three.js setup complete, camera.z =', this._threeCamera.position.z);
+        }
         
         // Store video for when we receive start playback message
         this.pendingVideo = video;
         
-        // Signal to SettingsView that video is loaded and ready
+        // Signal to SettingsView that video is loaded and Three.js is ready
         this.streamlabs.postMessage('isVideoSourceInBrowserSourceLoaded', { isVideoSourceInBrowserSourceLoaded: true });
+        this.remoteLog('log', 'Sent ready signal to SettingsView');
         
       } catch (err) {
         this.remoteLog('error', 'Error loading video from base64:', err.message);

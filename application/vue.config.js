@@ -36,5 +36,11 @@ module.exports = defineConfig({
     }
   },
   
-  productionSourceMap: false
+  productionSourceMap: false,
+  
+  configureWebpack: {
+    performance: {
+      hints: false
+    }
+  }
 });
