@@ -75,15 +75,17 @@
         </div>
         <div class="playback-controls-buttons">
           <button 
-            class="playback-btn play-scenes-btn" 
+            class="playback-btn record-scenes-btn" 
             :class="{ active: isRecordingScenes }"
             :disabled="playableScenes.length <= 1 || isPreviewPlaying || isStartingRecording"
             @click="isRecordingScenes ? stopSceneCycling(true) : showRecordingModal = true"
           >
             <span v-if="isStartingRecording" class="spinner-small"></span>
-            <span v-else :class="isRecordingScenes ? 'fa-solid fa-stop' : 'icon-playing'"></span>
+            <span v-else-if="isRecordingScenes" class="fa-solid fa-stop"></span>
+            <img v-else :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="btn-icon-svg" alt="" />
             {{ isStartingRecording ? 'Starting...' : (isRecordingScenes ? 'Stop' : 'Record Scenes') }}
           </button>
+          <span v-if="recordStatus" class="record-status">{{ recordStatus }}</span>
           <button 
             v-if="lastReplayBufferFileId"
             class="playback-btn preview-btn"
@@ -101,7 +103,7 @@
             @click="exportReplayToScene()"
           >
             <span v-if="isExporting" class="spinner-small"></span>
-            <span v-else class="icon-share"></span>
+            <span v-else class="icon-save"></span>
             {{ isExporting ? 'Exporting...' : 'Export' }}
           </button>
           <span v-if="exportStatus" class="export-status">{{ exportStatus }}</span>
@@ -110,20 +112,21 @@
       <!-- Playback Controls Section - Full Width Row -->
       <div v-if="isRecordingScenes || isPreviewPlaying" class="playback-controls-section full-width">
         <div class="playback-progress-section">
-          <span :class="isPreviewPlaying ? 'icon-replay-buffer' : 'icon-playing'" class="playback-icon"></span>
+          <span v-if="isPreviewPlaying" class="icon-replay-buffer playback-icon"></span>
+          <img v-else :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="playback-icon-svg" alt="" />
           <div class="playback-progress-bar">
             <div 
               class="playback-progress-fill" 
               :style="{ width: playbackProgress + '%' }"
             ></div>
-            <!-- Scene divider lines -->
+            <!-- Scene divider carets -->
             <template v-if="(isRecordingScenes || isPreviewPlaying) && scenesToCycle.length > 1">
               <div 
                 v-for="n in (scenesToCycle.length - 1)" 
                 :key="n" 
                 class="scene-divider" 
                 :style="{ left: (n / scenesToCycle.length * 100) + '%' }"
-              ></div>
+              ><i class="fa-solid fa-caret-down"></i></div>
             </template>
           </div>
           <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
@@ -400,7 +403,7 @@
       <div class="modal-content recording-modal">
         <div class="modal-header">
           <h2 class="modal-title">
-            <span class="icon-playing"></span>
+            <img :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="modal-title-icon" alt="" />
             Record Scenes
           </h2>
           <button class="modal-close" @click="showRecordingModal = false">
@@ -440,7 +443,7 @@
               Cancel
             </button>
             <button class="modal-btn start-btn" @click="confirmStartRecording">
-              <span class="icon-playing"></span>
+              <img :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="btn-icon-svg" alt="" />
               Start Recording
             </button>
           </div>
@@ -458,7 +461,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
-import { performSceneCameraAnimation, cancelAllAnimations } from '@/utils/cameraAnimations';
+import { performSceneCameraAnimation, cancelAllAnimations, buildCameraTimeline } from '@/utils/cameraAnimations';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -536,6 +539,7 @@ export default {
       isPreviewPlaying: false,
       isExportingSave: false, // Flag to prevent updating lastReplayBufferFileId during export
       exportStatus: '', // Status text shown during export process
+      recordStatus: '', // Status text shown during recording process
       outputFilePath: '',
       
       // Canvas dimensions (1920x1080 base resolution)
@@ -2013,8 +2017,25 @@ export default {
         const secs = videoSeconds % 60;
         const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
-        // Build scene timing data for camera animations in SceneCollectionView
-        const sceneTimingData = this.buildSceneTimingData(bufferStartDelay);
+        // Build pre-computed camera timeline for SceneCollectionView
+        // All positions, durations, and easing are calculated here
+        const planeHeight = 2;
+        const videoAspect = video.videoWidth / video.videoHeight;
+        const planeWidth = planeHeight * videoAspect;
+        
+        const cameraTimeline = buildCameraTimeline({
+          scenes: this.scenesToCycle,
+          activeScenes: this.activeScenes,
+          activeSources: this.activeSources,
+          displayMode: this.displayMode,
+          sceneDuration: this.sceneDuration,
+          transitionTime: this.transitionTime,
+          bufferStartDelay,
+          canvasWidth: this.canvasBaseWidth,
+          canvasHeight: this.canvasBaseHeight,
+          planeWidth,
+          planeHeight
+        });
 
         // Send video data in chunks to show progress for large files
         const chunkSize = 512 * 1024; // 512KB chunks
@@ -2029,7 +2050,7 @@ export default {
           totalSize: base64.length,
           mimeType: replayFile.type || 'video/mp4',
           fileName: replayFile.name,
-          sceneTimingData: sceneTimingData
+          cameraTimeline: cameraTimeline
         });
         
         // Send chunks with progress updates
@@ -2326,6 +2347,7 @@ export default {
       
       // Ensure replay buffer is enabled and started
       try {
+        this.recordStatus = 'Setting up replay buffer...';
         const enabled = await this.streamlabsOBS.v1.Replay.getEnabled();
         console.log('Buffer enabled:', enabled);
         
@@ -2371,6 +2393,7 @@ export default {
         // Switch to first scene BEFORE starting the buffer
         // This ensures the initial transition is not recorded
         this.currentSceneIndex = 0;
+        this.recordStatus = `Switching to first scene...`;
         await this.activateCurrentScene();
         
         // Wait for transition to complete before starting buffer
@@ -2379,6 +2402,7 @@ export default {
         }
         
         // Start the buffer after transition completes
+        this.recordStatus = 'Starting replay buffer...';
         await this.streamlabsOBS.v1.Replay.startBuffer();
         console.log('Replay buffer started');
         
@@ -2428,6 +2452,9 @@ export default {
 
     async stopSceneCycling(isManual = false) {
       const wasRecording = this.isRecordingScenes;
+      
+      // Clear recording status
+      this.recordStatus = '';
       
       // Stop Recording Debug Stopwatch and log duration
       if (this._recordingDebugStartTime) {
@@ -2665,60 +2692,7 @@ export default {
       });
     },
     
-    /**
-     * Build scene timing data to pass to SceneCollectionView for export camera animations
-     * Contains all info needed to trigger animations at the right times
-     */
-    buildSceneTimingData(bufferStartDelay) {
-      const sceneTimingData = {
-        bufferStartDelay,
-        sceneDuration: this.sceneDuration,
-        transitionTime: this.transitionTime,
-        canvasWidth: this.canvasBaseWidth,
-        canvasHeight: this.canvasBaseHeight,
-        displayMode: this.displayMode,
-        scenes: []
-      };
-      
-      let currentTimeMs = bufferStartDelay;
-      
-      this.scenesToCycle.forEach((scene, index) => {
-        // Get scene nodes for this scene
-        const sceneData = this.activeScenes.find(s => s.id === scene.id);
-        const nodes = sceneData?.nodes?.filter(n => n.display === this.displayMode && n.type !== 'folder') || [];
-        
-        // Build minimal node/source data for camera animation
-        const sceneInfo = {
-          name: scene.name,
-          startTimeMs: currentTimeMs,
-          nodes: nodes.map(node => {
-            const source = this.activeSources.find(s => s.id === node.sourceId);
-            return {
-              sourceId: node.sourceId,
-              visible: node.visible,
-              transform: node.transform,
-              source: source ? {
-                id: source.id,
-                name: source.name,
-                type: source.type,
-                size: source.size
-              } : null
-            };
-          }).filter(n => n.source)
-        };
-        
-        sceneTimingData.scenes.push(sceneInfo);
-        
-        // Move to next scene
-        currentTimeMs += this.sceneDuration;
-        if (index < this.scenesToCycle.length - 1) {
-          currentTimeMs += this.transitionTime;
-        }
-      });
-      
-      console.log('Built scene timing data:', sceneTimingData);
-      return sceneTimingData;
-    },
+    // buildSceneTimingData removed - replaced by buildCameraTimeline in cameraAnimations.js
     
     restoreWireframeView() {
       // Clear scheduled preview animations
@@ -2820,7 +2794,9 @@ export default {
       if (scene) {
         try {
           await this.streamlabsOBS.v1.Scenes.makeSceneActive(scene.id);
+          const sceneStatus = `Scene: ${scene.name} (${this.currentSceneIndex + 1}/${this.scenesToCycle.length})`;
           console.log('Switched to scene:', scene.name, `(${this.currentSceneIndex + 1}/${this.scenesToCycle.length})`);
+          this.recordStatus = sceneStatus;
           // Update the UI to reflect the new active scene
           await this.selectActiveScene(scene.id);
         } catch (err) {
@@ -3377,6 +3353,7 @@ export default {
   height: 2px;
   background: rgba(0, 0, 0, 0.5);
   z-index: 5;
+  display: none;
 }
 
 .canvas-progress-fill {
@@ -3625,41 +3602,14 @@ export default {
 }
 
 /* Play Scenes Button */
-.play-scenes-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.6rem;
-  background: var(--teal-semi);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--teal);
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: 'Roboto', Arial, sans-serif;
-  margin-left: auto;
-}
 
-.play-scenes-btn:hover:not(:disabled) {
-  background: var(--teal);
-  color: var(--action-button-text);
-  border-color: var(--teal);
-}
-
-.play-scenes-btn:disabled {
+.record-scenes-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.play-scenes-btn.active {
-  background: var(--teal);
-  color: var(--action-button-text);
-  border-color: var(--teal);
-}
 
-.play-scenes-btn span {
+.record-scenes-btn span {
   font-size: 1rem;
 }
 
@@ -3828,8 +3778,6 @@ export default {
 /* Playback Controls Section */
 .playback-controls-section {
     background: var(--section);
-    border: 1px solid var(--border);
-    border-radius: 8px;
     overflow: hidden;
     flex: 1;
     flex-direction: row;
@@ -3861,20 +3809,36 @@ export default {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 4px;
+  border: 2px solid var(--button);
+  border-radius: 8px;
   font-size: 0.95rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
   font-family: 'Roboto', Arial, sans-serif;
-  background: var(--button);
+  background: var(--section);
   color: var(--link);
 }
 
+.start-btn {
+  background: var(--section);
+  border: 2px solid var(--button);
+  font-weight: 600;
+  color: var(--paragraph);
+}
+
+.start-btn:hover {
+  background: var(--background);
+  color: var(--title);
+}
+
+.start-btn span {
+  font-size: 0.85rem;
+}
+
 .playback-btn:hover:not(:disabled) {
-  background: var(--button-hover);
-  color: var(--link-active);
+  background: var(--background);
+  color: var(--title);
 }
 
 .playback-btn:disabled {
@@ -3890,6 +3854,32 @@ export default {
 
 .playback-btn span {
   font-size: 1rem;
+}
+
+.playback-btn .btn-icon-svg {
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
+}
+
+.playback-icon-svg {
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.modal-title-icon {
+  width: 27px;
+  height: 27px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.modal-btn .btn-icon-svg {
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
 }
 
 .spinner-small {
@@ -3926,6 +3916,14 @@ export default {
   font-style: italic;
   white-space: nowrap;
   animation: fadeInOut 1.5s ease-in-out infinite;
+}
+
+/* Record Status Text */
+.record-status {
+  font-size: 0.8rem;
+  color: var(--teal);
+  font-style: italic;
+  white-space: nowrap;
 }
 
 @keyframes fadeInOut {
@@ -3966,16 +3964,15 @@ export default {
 .playback-timecode {
   margin-left: auto;
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 400;
   font-family: 'Roboto Mono', monospace;
-  color: var(--teal);
+  color: var(--paragraph);
 }
 
 .playback-progress-bar {
   position: relative;
   height: 12px;
   background: var(--border);
-  border-radius: 6px;
   overflow: visible;
   min-width: 50px;
   flex: 1;
@@ -3983,21 +3980,30 @@ export default {
 
 .scene-divider {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
-  border-radius: 50%; 
-  border: 2px solid var(--dashboard-bg);
-  background: var(--paragraph);
+  bottom: 100%;
+  transform: translateX(-50%);
   pointer-events: none;
+  color: var(--teal);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.7;
 }
 
 .playback-progress-fill {
+  position: relative;
+  height: 100%;
+  background: transparent;
+  /* No transition - animated smoothly via requestAnimationFrame */
+}
+
+.playback-progress-fill::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 2px;
   height: 100%;
   background: var(--teal);
-  border-radius: 6px;
-  /* No transition - animated smoothly via requestAnimationFrame */
 }
 
 /* Modal Styles */
@@ -4193,7 +4199,7 @@ export default {
   padding: 0.75rem 1.25rem;
   border-radius: 6px;
   font-size: 0.9rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -4209,18 +4215,5 @@ export default {
   color: var(--title);
 }
 
-.start-btn {
-  background: var(--teal);
-  border: none;
-  font-weight: 600;
-  color: var(--dark-background);
-}
 
-.start-btn:hover {
-  background: var(--teal-hover);
-}
-
-.start-btn span {
-  font-size: 0.85rem;
-}
 </style>

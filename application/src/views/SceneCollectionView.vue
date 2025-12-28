@@ -19,7 +19,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
-import { applyCameraIntroAnimation, performSceneCameraAnimation, isGameplayScene, findWebcamSources, getSourceCenterOnPlane, getCameraDistanceForSource, animateSceneTransition, animateToSource, animateBackToCenter, SCENE_TRANSITION } from '@/utils/cameraAnimations';
+import { applyCameraIntroAnimation, executeSceneTimeline, cancelAllAnimations } from '@/utils/cameraAnimations';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -43,8 +43,8 @@ export default {
       // Video element reference for message handler
       pendingVideo: null,
       
-      // Scene timing data for camera animations
-      sceneTimingData: null,
+      // Pre-computed camera timeline from SettingsView
+      cameraTimeline: null,
       
       // Three.js objects - stored outside of Vue reactivity
       threeInitialized: false,
@@ -120,14 +120,14 @@ export default {
             this.receivedChunks = 0;
             this.totalChunks = event.data.totalChunks;
             const sizeMB = ((event.data.totalSize * 0.75) / (1024 * 1024)).toFixed(1);
-            this.remoteLog('log', `Starting chunked receive: ${this.totalChunks} chunks, ${sizeMB}MB`);
+            //this.remoteLog('log', `Starting chunked receive: ${this.totalChunks} chunks, ${sizeMB}MB`);
           } else if (event.type === 'loadReplayChunk') {
             // Receive a chunk
             this.chunkBuffer[event.data.chunkIndex] = event.data.chunk;
             this.receivedChunks++;
           } else if (event.type === 'loadReplayChunkEnd') {
             // All chunks received, reassemble and process
-            this.remoteLog('log', `Received ${this.receivedChunks}/${this.totalChunks} chunks, reassembling...`);
+            //this.remoteLog('log', `Received ${this.receivedChunks}/${this.totalChunks} chunks, reassembling...`);
             
             // Validate all chunks are present
             let missingChunks = [];
@@ -157,7 +157,7 @@ export default {
               base64: base64,
               mimeType: this.chunkMetadata.mimeType,
               fileName: this.chunkMetadata.fileName,
-              sceneTimingData: this.chunkMetadata.sceneTimingData
+              cameraTimeline: this.chunkMetadata.cameraTimeline
             });
             this.chunkMetadata = null;
           } else if (event.type === 'startVideoSourcePlaybackInBrowserSource') {
@@ -201,23 +201,19 @@ export default {
         this.isPlaying = true;
         this.videoDuration = video.duration * 1000;
         
-        // Get plane dimensions for camera animations
-        const planeWidth = this._threePlane.geometry.parameters.width;
-        const planeHeight = this._threePlane.geometry.parameters.height;
-        
-        // Schedule scene-timed camera animations if scene timing data is available
-        if (this.sceneTimingData && this.sceneTimingData.scenes && this.sceneTimingData.scenes.length > 0) {
-          this.remoteLog('log', `Starting scene-timed camera animations for ${this.sceneTimingData.scenes.length} scenes`);
-          this.scheduleSceneCameraAnimations(video, planeWidth, planeHeight);
+        // Schedule camera animations from pre-computed timeline
+        if (this.cameraTimeline && this.cameraTimeline.scenes && this.cameraTimeline.scenes.length > 0) {
+          //this.remoteLog('log', `Starting timeline animations for ${this.cameraTimeline.scenes.length} scenes`);
+          this.scheduleCameraTimeline(video);
         } else {
           // Fallback to simple intro animation
-          this.remoteLog('log', 'No scene timing data, using simple intro animation');
+          //this.remoteLog('log', 'No camera timeline, using simple intro animation');
           applyCameraIntroAnimation(this._threeCamera, this._threeControls);
         }
         
         // Start video playback
         await video.play();
-        this.remoteLog('log', 'Video playing:', video.videoWidth, 'x', video.videoHeight);
+        //this.remoteLog('log', 'Video playing:', video.videoWidth, 'x', video.videoHeight);
         
         // Track playback progress
         video.ontimeupdate = () => {
@@ -228,7 +224,7 @@ export default {
         
         // Listen for video end and notify SettingsView
         video.onended = () => {
-          this.remoteLog('log', 'Playback ended!');
+          //this.remoteLog('log', 'Playback ended!');
           this.isPlaying = false;
           this.playbackProgress = 0;
           // Clear any pending animation timeouts
@@ -241,7 +237,7 @@ export default {
         };
         
         this.loading = false;
-        this.remoteLog('log', 'Playback started!');
+        //this.remoteLog('log', 'Playback started!');
       } catch (err) {
         this.remoteLog('error', 'Error starting video playback:', err.message);
         this.error = 'Failed to start video playback';
@@ -424,12 +420,12 @@ export default {
           }
         }
         
-        const { base64, mimeType, fileName, sceneTimingData } = data;
+        const { base64, mimeType, fileName, cameraTimeline } = data;
         
-        // Store scene timing data for camera animations
-        if (sceneTimingData) {
-          this.sceneTimingData = sceneTimingData;
-          this.remoteLog('log', `Received scene timing data for ${sceneTimingData.scenes?.length || 0} scenes`);
+        // Store pre-computed camera timeline for playback
+        if (cameraTimeline) {
+          this.cameraTimeline = cameraTimeline;
+          this.remoteLog('log', `Received camera timeline for ${cameraTimeline.scenes?.length || 0} scenes`);
         }
         
         if (!base64) {
@@ -438,7 +434,7 @@ export default {
           return;
         }
         
-        this.remoteLog('log', `Converting base64 to blob, length: ${base64.length}`);
+        //this.remoteLog('log', `Converting base64 to blob, length: ${base64.length}`);
         
         // Convert base64 back to blob with error handling
         let binaryString;
@@ -459,7 +455,7 @@ export default {
         
         this.remoteLog('log', `Created blob, size: ${(blob.size / (1024 * 1024)).toFixed(2)}MB`);
         const videoUrl = URL.createObjectURL(blob);
-        this.remoteLog('log', `Created blob URL: ${videoUrl}`);
+        //this.remoteLog('log', `Created blob URL: ${videoUrl}`);
         
         // Store blob URL for cleanup
         this._currentBlobUrl = videoUrl;
@@ -529,7 +525,7 @@ export default {
         
         // Signal to SettingsView that video is loaded and Three.js is ready
         this.streamlabs.postMessage('isVideoSourceInBrowserSourceLoaded', { isVideoSourceInBrowserSourceLoaded: true });
-        this.remoteLog('log', 'Sent ready signal to SettingsView');
+        //this.remoteLog('log', 'Sent ready signal to SettingsView');
         
       } catch (err) {
         this.remoteLog('error', 'Error loading video from base64:', err.message);
@@ -552,27 +548,17 @@ export default {
      * Schedule camera animations to match scene timing during video playback
      * Uses the scene timing data passed from SettingsView
      */
-    scheduleSceneCameraAnimations(video, planeWidth, planeHeight) {
+    scheduleCameraTimeline(video) {
       // Clear any existing scheduled animations
       this.clearAnimationTimeouts();
       this._animationTimeouts = [];
       
-      const { scenes, sceneDuration, canvasWidth, canvasHeight } = this.sceneTimingData;
+      const { scenes } = this.cameraTimeline;
       
-      scenes.forEach((sceneInfo, index) => {
-        const { name, startTimeMs, nodes } = sceneInfo;
+      scenes.forEach((sceneTimeline) => {
+        const { name, startTimeMs } = sceneTimeline;
         
-        // Build sources array from node data
-        const sources = nodes.map(n => n.source).filter(Boolean);
-        
-        // Build nodes array in the format performSceneCameraAnimation expects
-        const nodesForAnimation = nodes.map(n => ({
-          sourceId: n.sourceId,
-          visible: n.visible,
-          transform: n.transform
-        }));
-        
-        this.remoteLog('log', `Scheduling animation for scene "${name}" at ${startTimeMs}ms`);
+        //this.remoteLog('log', `Scheduling timeline for scene "${name}" at ${startTimeMs}ms`);
         
         // Schedule animation to trigger when video reaches this scene's start time
         const timeout = setTimeout(() => {
@@ -580,63 +566,14 @@ export default {
           if (!this.isPlaying || !video || video.paused) return;
           
           const videoTimeMs = video.currentTime * 1000;
-          this.remoteLog('log', `Triggering camera animation for scene "${name}" at video time ${videoTimeMs}ms`);
+          //this.remoteLog('log', `Executing timeline for scene "${name}" at video time ${videoTimeMs}ms`);
           
-          // Use performSceneCameraAnimation with the node/source data
-          this.performSceneAnimation(nodesForAnimation, sources, canvasWidth, canvasHeight, planeWidth, planeHeight, sceneDuration);
+          // Execute the pre-computed animation sequence
+          executeSceneTimeline(this._threeControls, sceneTimeline);
         }, startTimeMs);
         
         this._animationTimeouts.push(timeout);
       });
-    },
-    
-    /**
-     * Perform camera animation for a single scene
-     * This is a local implementation since we don't have the full controls context
-     */
-    async performSceneAnimation(nodes, sources, canvasWidth, canvasHeight, planeWidth, planeHeight, sceneDuration) {
-      if (!this._threeControls) return;
-      
-      // Check if this is a gameplay scene with webcam
-      const isGameplay = isGameplayScene(nodes, sources);
-      const webcamSources = findWebcamSources(nodes, sources);
-      
-      this.remoteLog('log', `Performing animation: isGameplay=${isGameplay}, webcamCount=${webcamSources.length}`);
-      
-      if (isGameplay && webcamSources.length > 0) {
-        // Gameplay scene with webcam: do multi-stage animation
-        const firstAnimDuration = Math.min(2, sceneDuration * 0.35 / 1000);
-        const focusAnimDuration = Math.min(1.5, sceneDuration * 0.25 / 1000);
-        const returnAnimDuration = Math.min(1.5, sceneDuration * 0.25 / 1000);
-        const focusHoldTime = sceneDuration * 0.15;
-        
-        // First animation: random to center
-        await animateSceneTransition(this._threeControls, planeWidth, planeHeight, { duration: firstAnimDuration });
-        
-        // Small pause before focusing
-        await new Promise(r => setTimeout(r, SCENE_TRANSITION.focusDelay * 1000));
-        
-        // Pick the first webcam source
-        const { node: webcamNode, source: webcamSource } = webcamSources[0];
-        
-        // Calculate webcam position on plane
-        const webcamCenter = getSourceCenterOnPlane(webcamNode, webcamSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
-        const webcamDistance = getCameraDistanceForSource(webcamNode, webcamSource, canvasWidth, canvasHeight, 2);
-        
-        // Second animation: focus on webcam
-        await animateToSource(this._threeControls, webcamCenter, webcamDistance, planeWidth, planeHeight, { duration: focusAnimDuration });
-        
-        // Hold on webcam for a moment
-        await new Promise(r => setTimeout(r, focusHoldTime));
-        
-        // Third animation: return to center
-        await animateBackToCenter(this._threeControls, { duration: returnAnimDuration });
-        
-      } else {
-        // Regular scene: just do the standard transition animation
-        const animDuration = Math.min(2.5, sceneDuration * 0.5 / 1000);
-        await animateSceneTransition(this._threeControls, planeWidth, planeHeight, { duration: animDuration });
-      }
     }
   }
 };
@@ -671,6 +608,7 @@ export default {
   height: 2px;
   background: rgba(0, 0, 0, 0.5);
   z-index: 10;
+  display: none;
 }
 
 .playback-progress-overlay .playback-progress-fill {

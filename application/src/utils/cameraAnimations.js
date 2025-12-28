@@ -17,8 +17,16 @@ export const SCENE_TRANSITION = {
   focusDelay: 0.5        // Delay between first and second animation (for gameplay scenes)
 };
 
+// Easing function types for timeline
+export const EASING = {
+  POWER3_OUT: 'power3.out',
+  POWER2_INOUT: 'power2.inOut',
+  POWER4_OUT: 'power4.out'
+};
+
 // Global animation cancellation flag - set to true to stop all running animations
 let animationsCancelled = false;
+let cancellationGeneration = 0;
 
 /**
  * Cancel all running camera animations
@@ -26,10 +34,15 @@ let animationsCancelled = false;
  */
 export function cancelAllAnimations() {
   animationsCancelled = true;
-  // Reset after a frame to allow new animations to start
-  requestAnimationFrame(() => {
-    animationsCancelled = false;
-  });
+  cancellationGeneration++;
+  const currentGeneration = cancellationGeneration;
+  // Reset after 100ms to allow all animation frames to see the cancellation
+  setTimeout(() => {
+    // Only reset if no new cancellation has been requested
+    if (cancellationGeneration === currentGeneration) {
+      animationsCancelled = false;
+    }
+  }, 100);
 }
 
 /**
@@ -184,12 +197,14 @@ export function findWebcamSources(nodes, sources) {
       return true;
     }
     
+    /*
     // Image/video sources with webcam/frame in name (webcam frames/overlays)
     if (sourceType === 'image_source' || sourceType === 'ffmpeg_source') {
       if (sourceName.includes('webcam') || sourceName.includes('frame') || sourceName.includes('camera') || sourceName.includes('facecam')) {
         return true;
       }
     }
+    */
     
     return false;
   }).map(node => ({
@@ -287,14 +302,14 @@ export function animateSceneTransition(controls, planeWidth, planeHeight, option
     const targetA = getRandomPointOnPlane(planeWidth, planeHeight);
     
     // End position: centered, at distance 1 from plane
-    const posB = { x: 0, y: 0, z: 2.5 };
+    const posB = { x: 0, y: 0, z: 2.25 };
     
     // End target: center of plane
     const targetB = { x: 0, y: 0, z: 0 };
     
     console.log('animateSceneTransition: Starting animation');
-    console.log('  From position:', posA, 'looking at:', targetA);
-    console.log('  To position:', posB, 'looking at:', targetB);
+    console.log('From position:', posA, 'looking at:', targetA);
+    console.log('To position:', posB, 'looking at:', targetB);
     
     let startTime = null;
     
@@ -464,7 +479,7 @@ export function animateBackToCenter(controls, options = {}) {
     };
     
     // End position: centered view
-    const posB = { x: 0, y: 0, z: 2.5 };
+    const posB = { x: 0, y: 0, z: 2.25 };
     const targetB = { x: 0, y: 0, z: 0 };
     
     console.log('animateBackToCenter: Returning to center view');
@@ -571,5 +586,304 @@ export async function performSceneCameraAnimation(controls, nodes, sources, canv
     // Regular scene: just do the standard transition animation
     const animDuration = Math.min(2.5, sceneDuration * 0.5 / 1000); // 50% of scene, max 2.5s
     await animateSceneTransition(controls, planeWidth, planeHeight, { duration: animDuration });
+  }
+}
+
+// ============================================================================
+// CAMERA TIMELINE SYSTEM
+// Pre-computed animation data sent from SettingsView to SceneCollectionView
+// ============================================================================
+
+/**
+ * Apply easing function to a 0-1 progress value
+ */
+export function applyEasing(t, easingType) {
+  switch (easingType) {
+    case EASING.POWER4_OUT:
+      return 1 - Math.pow(1 - t, 4);
+    case EASING.POWER3_OUT:
+      return 1 - Math.pow(1 - t, 3);
+    case EASING.POWER2_INOUT:
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    default:
+      return 1 - Math.pow(1 - t, 3); // Default to power3.out
+  }
+}
+
+/**
+ * Generate a random starting position for scene transitions
+ * Called in SettingsView so randomness is baked into timeline
+ */
+function generateRandomStartPosition(planeWidth, planeHeight) {
+  const halfWidth = planeWidth / 2;
+  const halfHeight = planeHeight / 2;
+  
+  return {
+    position: {
+      x: randomBetween(-2, 2),
+      y: randomBetween(-1, 1),
+      z: randomBetween(2, 4)
+    },
+    target: {
+      x: randomBetween(-halfWidth * 0.8, halfWidth * 0.8),
+      y: randomBetween(-halfHeight * 0.8, halfHeight * 0.8),
+      z: 0
+    }
+  };
+}
+
+/**
+ * Build a complete camera timeline for all scenes
+ * This is called in SettingsView and the result is sent to SceneCollectionView
+ * 
+ * @param {Object} params - Parameters for building the timeline
+ * @param {Array} params.scenes - Array of scene data from scenesToCycle
+ * @param {Array} params.activeScenes - Full scene data array
+ * @param {Array} params.activeSources - All sources
+ * @param {string} params.displayMode - Current display mode
+ * @param {number} params.sceneDuration - Duration per scene in ms
+ * @param {number} params.transitionTime - Transition time between scenes in ms
+ * @param {number} params.bufferStartDelay - Delay before first scene in ms
+ * @param {number} params.canvasWidth - Canvas width in pixels
+ * @param {number} params.canvasHeight - Canvas height in pixels
+ * @param {number} params.planeWidth - Three.js plane width (usually ~3.55 for 16:9)
+ * @param {number} params.planeHeight - Three.js plane height (usually 2)
+ * @returns {Object} Complete timeline data to send via postMessage
+ */
+export function buildCameraTimeline(params) {
+  const {
+    scenes,
+    activeScenes,
+    activeSources,
+    displayMode,
+    sceneDuration,
+    transitionTime,
+    bufferStartDelay,
+    canvasWidth,
+    canvasHeight,
+    planeWidth,
+    planeHeight
+  } = params;
+  
+  const timeline = {
+    planeWidth,
+    planeHeight,
+    scenes: []
+  };
+  
+  let currentTimeMs = bufferStartDelay;
+  
+  scenes.forEach((scene, index) => {
+    // Get scene nodes
+    const sceneData = activeScenes.find(s => s.id === scene.id);
+    const nodes = sceneData?.nodes?.filter(n => n.display === displayMode && n.type !== 'folder') || [];
+    
+    // Build sources lookup for this scene
+    const nodesWithSources = nodes.map(node => {
+      const source = activeSources.find(s => s.id === node.sourceId);
+      return { node, source };
+    }).filter(n => n.source);
+    
+    // Analyze scene type
+    const isGameplay = isGameplayScene(nodes, activeSources);
+    const webcamSources = findWebcamSources(nodes, activeSources);
+    
+    // Build animation sequence for this scene
+    const sceneEntry = {
+      name: scene.name,
+      startTimeMs: currentTimeMs,
+      isGameplay,
+      animations: []
+    };
+    
+    // Center position (used as end point for most animations)
+    const centerPos = { x: 0, y: 0, z: 2.25 };
+    const centerTarget = { x: 0, y: 0, z: 0 };
+    
+    if (isGameplay && webcamSources.length > 0) {
+      // Gameplay scene: multi-stage animation sequence
+      const firstAnimDuration = Math.min(2000, sceneDuration * 0.35);
+      const focusDelay = SCENE_TRANSITION.focusDelay * 1000;
+      const focusAnimDuration = Math.min(1500, sceneDuration * 0.25);
+      const focusHoldTime = sceneDuration * 0.15;
+      const returnAnimDuration = Math.min(1500, sceneDuration * 0.25);
+      
+      // Generate random start position (baked into timeline)
+      const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+      
+      // Animation 1: Random position to center
+      sceneEntry.animations.push({
+        type: 'animate',
+        durationMs: firstAnimDuration,
+        startPos: randomStart.position,
+        startTarget: randomStart.target,
+        endPos: centerPos,
+        endTarget: centerTarget,
+        easing: EASING.POWER3_OUT
+      });
+      
+      // Wait before focusing on webcam
+      sceneEntry.animations.push({
+        type: 'wait',
+        durationMs: focusDelay
+      });
+      
+      // Calculate webcam focus position
+      const { node: webcamNode, source: webcamSource } = webcamSources[0];
+      const webcamCenter = getSourceCenterOnPlane(webcamNode, webcamSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
+      const webcamDistance = getCameraDistanceForSource(webcamNode, webcamSource, canvasWidth, canvasHeight, 2);
+      
+      const webcamPos = { x: webcamCenter.x, y: webcamCenter.y, z: webcamDistance };
+      const webcamTarget = { x: webcamCenter.x, y: webcamCenter.y, z: 0 };
+      
+      // Animation 2: Focus on webcam (starts from current position - use 'fromCurrent')
+      sceneEntry.animations.push({
+        type: 'animate',
+        durationMs: focusAnimDuration,
+        fromCurrent: true, // Will use current camera position as start
+        endPos: webcamPos,
+        endTarget: webcamTarget,
+        easing: EASING.POWER2_INOUT
+      });
+      
+      // Hold on webcam
+      sceneEntry.animations.push({
+        type: 'wait',
+        durationMs: focusHoldTime
+      });
+      
+      // Animation 3: Return to center
+      sceneEntry.animations.push({
+        type: 'animate',
+        durationMs: returnAnimDuration,
+        fromCurrent: true,
+        endPos: centerPos,
+        endTarget: centerTarget,
+        easing: EASING.POWER3_OUT
+      });
+      
+    } else {
+      // Regular scene: single transition animation
+      const animDuration = Math.min(2500, sceneDuration * 0.5);
+      
+      // Generate random start position
+      const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+      
+      sceneEntry.animations.push({
+        type: 'animate',
+        durationMs: animDuration,
+        startPos: randomStart.position,
+        startTarget: randomStart.target,
+        endPos: centerPos,
+        endTarget: centerTarget,
+        easing: EASING.POWER3_OUT
+      });
+    }
+    
+    timeline.scenes.push(sceneEntry);
+    
+    // Move to next scene
+    currentTimeMs += sceneDuration;
+    if (index < scenes.length - 1) {
+      currentTimeMs += transitionTime;
+    }
+  });
+  
+  console.log('Built camera timeline:', timeline);
+  return timeline;
+}
+
+/**
+ * Execute a single animation step from the timeline
+ * Called by SceneCollectionView for each animation in a scene
+ * 
+ * @param {CameraControls} controls - The CameraControls instance
+ * @param {Object} animation - Animation step from timeline
+ * @returns {Promise} Resolves when animation completes
+ */
+export function executeTimelineAnimation(controls, animation) {
+  return new Promise((resolve) => {
+    if (!controls) {
+      resolve();
+      return;
+    }
+    
+    if (animation.type === 'wait') {
+      setTimeout(resolve, animation.durationMs);
+      return;
+    }
+    
+    if (animation.type !== 'animate') {
+      console.warn('executeTimelineAnimation: Unknown animation type:', animation.type);
+      resolve();
+      return;
+    }
+    
+    const duration = animation.durationMs;
+    
+    // Determine start position
+    let posA, targetA;
+    if (animation.fromCurrent) {
+      const currentPos = controls.getPosition();
+      const currentTarget = controls.getTarget();
+      posA = { x: currentPos.x, y: currentPos.y, z: currentPos.z };
+      targetA = { x: currentTarget.x, y: currentTarget.y, z: currentTarget.z };
+    } else {
+      posA = animation.startPos;
+      targetA = animation.startTarget;
+    }
+    
+    const posB = animation.endPos;
+    const targetB = animation.endTarget;
+    const easingType = animation.easing;
+    
+    let startTime = null;
+    
+    function animate(timestamp) {
+      if (isAnimationCancelled()) {
+        resolve();
+        return;
+      }
+      
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      const t = Math.min(elapsed / duration, 1);
+      const easedT = applyEasing(t, easingType);
+      
+      controls.lerpLookAt(
+        posA.x, posA.y, posA.z,
+        targetA.x, targetA.y, targetA.z,
+        posB.x, posB.y, posB.z,
+        targetB.x, targetB.y, targetB.z,
+        easedT,
+        false
+      );
+      
+      if (t < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        resolve();
+      }
+    }
+    
+    requestAnimationFrame(animate);
+  });
+}
+
+/**
+ * Execute all animations for a scene from the timeline
+ * 
+ * @param {CameraControls} controls - The CameraControls instance
+ * @param {Object} sceneTimeline - Scene entry from timeline.scenes
+ * @returns {Promise} Resolves when all animations complete
+ */
+export async function executeSceneTimeline(controls, sceneTimeline) {
+  if (!controls || !sceneTimeline || !sceneTimeline.animations) {
+    return;
+  }
+  
+  for (const animation of sceneTimeline.animations) {
+    if (isAnimationCancelled()) break;
+    await executeTimelineAnimation(controls, animation);
   }
 }
