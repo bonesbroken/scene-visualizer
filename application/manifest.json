@@ -1,5 +1,5 @@
 {
-    "version": "0.0.5",
+    "version": "0.0.51",
     "name": "Scene Collection Visualizer",
     "buildPath": "dist/",
     "permissions": ["slobs.scenes-sources", "slobs.scene-transitions", "slobs.external-links", "slobs.streaming", "slobs.scene-collections", "slobs.obs-settings", "slobs.notifications"],

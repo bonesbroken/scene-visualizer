@@ -1,5 +1,14 @@
 <template>
   <div class="dashboard" :class="themeClass">
+    <!-- Debug Navigation Buttons (Temporary) -->
+    <div class="debug-nav-section" style="padding: 10px; background: rgba(0,0,0,0.3); margin-bottom: 10px; display: none; gap: 10px; flex-wrap: wrap;">
+      <button @click="streamlabsOBS.v1.App.navigate('Editor')" style="padding: 8px 16px;">Editor</button>
+      <button @click="streamlabsOBS.v1.App.navigate('Dashboard')" style="padding: 8px 16px;">Dashboard</button>
+      <button @click="streamlabsOBS.v1.App.navigate('Live')" style="padding: 8px 16px;">Live</button>
+      <button @click="streamlabsOBS.v1.App.navigate('Themes')" style="padding: 8px 16px;">Themes</button>
+      <button @click="streamlabsOBS.v1.App.navigate('AppDetailsPage')" style="padding: 8px 16px;">AppDetailsPage</button>
+    </div>
+
     <!-- Debug Icon Grid -->
     <div class="debug-icon-section" style="display: none">
       <h2 class="debug-title">Icon Font Debug ({{ debugIcons.length }} icons)</h2>
@@ -34,6 +43,10 @@
         ></canvas>
         <!-- Three.js WebGL renderer canvas -->
         <div ref="threeContainer" class="three-container"></div>
+        <!-- 2px progress bar at bottom -->
+        <div v-if="isRecordingScenes || isPreviewPlaying" class="canvas-progress-overlay">
+          <div class="canvas-progress-fill" :style="{ width: playbackProgress + '%' }"></div>
+        </div>
         <!-- Resize handle -->
         <div 
           class="resize-handle"
@@ -91,6 +104,7 @@
             <span v-else class="icon-share"></span>
             {{ isExporting ? 'Exporting...' : 'Export' }}
           </button>
+          <span v-if="exportStatus" class="export-status">{{ exportStatus }}</span>
         </div>
       </div>
       <!-- Playback Controls Section - Full Width Row -->
@@ -409,20 +423,7 @@
                 step="500"
               />
             </div>
-            <div class="setting-row">
-              <label class="setting-label">
-                <span class="icon-transition"></span>
-                Transition Time (ms)
-              </label>
-              <input 
-                type="number" 
-                class="setting-input"
-                v-model.number="transitionTime"
-                min="0"
-                max="10000"
-                step="1"
-              />
-            </div>
+            <!-- Transition time hidden - using 0ms for instant transitions -->
             <div class="setting-info">
               <span class="icon-information"></span>
               Video Duration: {{ expectedRecordingDuration }}
@@ -457,7 +458,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
-import { applyCameraIntroAnimation } from '@/utils/cameraAnimations';
+import { performSceneCameraAnimation, cancelAllAnimations } from '@/utils/cameraAnimations';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -521,7 +522,7 @@ export default {
       currentSceneIndex: 0,
       scenesToCycle: [], // Snapshot of scenes to play during a cycle
       sceneDuration: 5000,
-      transitionTime: 300,
+      transitionTime: 0,
       playbackProgress: 0,
       playbackStartTime: null,
       playbackAnimationId: null,
@@ -534,6 +535,7 @@ export default {
       replaySaveResolver: null,
       isPreviewPlaying: false,
       isExportingSave: false, // Flag to prevent updating lastReplayBufferFileId during export
+      exportStatus: '', // Status text shown during export process
       outputFilePath: '',
       
       // Canvas dimensions (1920x1080 base resolution)
@@ -686,12 +688,13 @@ export default {
       const sceneCount = this.playableScenes.length;
       // Total = bufferStartDelay + (scenes × sceneDuration) + ((scenes - 1) × transitionTime)
       // No transition before first scene or after last scene
-      const bufferStartDelay = 500; // ms - must match startSceneCycling
+      const bufferStartDelay = 50; // ms - must match startSceneCycling
       const sceneDurationMs = (sceneCount * this.sceneDuration) + (Math.max(0, sceneCount - 1) * this.transitionTime);
       const totalMs = bufferStartDelay + sceneDurationMs;
       const totalSeconds = totalMs / 1000;
       const mins = Math.floor(totalSeconds / 60);
       const secs = (totalSeconds % 60).toFixed(1);
+      
       return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
     }
   },
@@ -1946,6 +1949,7 @@ export default {
       }
       
       this.isExporting = true;
+      this.exportStatus = 'Preparing scene...';
       
       try {
         // Get the first scene and make it active
@@ -1954,6 +1958,7 @@ export default {
         await this.streamlabsOBS.v1.Scenes.makeSceneActive(firstScene.id);
         
         // Wait for browser source to initialize after scene becomes active
+        this.exportStatus = 'Initializing browser source...';
         console.log('SettingsView: Waiting for browser source to initialize...');
         await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -1961,11 +1966,13 @@ export default {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         
         // Get the replay file and send to SceneCollectionView via postMessage
+        this.exportStatus = 'Loading replay file...';
         const replayFile = await this.streamlabsOBS.v1.Replay.getFileContents(this.lastReplayBufferFileId);
         console.log('exportReplayToScene', replayFile);
         
-        // Convert file to base64 for postMessage (IndexedDB not shared between views)
+        // Convert file to base64 for postMessage
         // Use FileReader to avoid stack overflow with large files
+        this.exportStatus = 'Converting video data...';
         const base64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
@@ -1996,37 +2003,72 @@ export default {
           video.load();
         });
         
+        // Buffer delay must match the wait time before starting playback
+        const bufferStartDelay = 50; // ms - time to wait for buffer to be ready
         const totalDurationMs = video.duration * 1000;
-        const totalSeconds = Math.floor(video.duration);
-        const mins = Math.floor(totalSeconds / 60);
-        const secs = totalSeconds % 60;
+        // Include buffer delay in the replay buffer duration so we don't lose the beginning
+        const totalSeconds = Math.ceil((totalDurationMs + bufferStartDelay) / 1000);
+        const videoSeconds = Math.floor(video.duration);
+        const mins = Math.floor(videoSeconds / 60);
+        const secs = videoSeconds % 60;
         const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
-        // Notify SceneCollectionView with video data via postMessage
-        console.log('SettingsView: Sending loadReplayFromBase64 message with video data...');
-        this.streamlabs.postMessage('loadReplayFromBase64', { 
-          base64: base64,
+        // Build scene timing data for camera animations in SceneCollectionView
+        const sceneTimingData = this.buildSceneTimingData(bufferStartDelay);
+
+        // Send video data in chunks to show progress for large files
+        const chunkSize = 512 * 1024; // 512KB chunks
+        const totalChunks = Math.ceil(base64.length / chunkSize);
+        const totalSizeMB = ((base64.length * 0.75) / (1024 * 1024)).toFixed(1);
+        
+        console.log(`SettingsView: Sending ${totalSizeMB}MB in ${totalChunks} chunks...`);
+        
+        // Send start message with metadata
+        this.streamlabs.postMessage('loadReplayChunkStart', {
+          totalChunks: totalChunks,
+          totalSize: base64.length,
           mimeType: replayFile.type || 'video/mp4',
-          fileName: replayFile.name
+          fileName: replayFile.name,
+          sceneTimingData: sceneTimingData
         });
-        console.log('SettingsView: postMessage sent, waiting for response...');
+        
+        // Send chunks with progress updates
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, base64.length);
+          const chunk = base64.slice(start, end);
+          const progress = Math.round(((i + 1) / totalChunks) * 100);
+          
+          this.exportStatus = `Sending video data... ${progress}% (${totalSizeMB}MB)`;
+          
+          this.streamlabs.postMessage('loadReplayChunk', {
+            chunkIndex: i,
+            totalChunks: totalChunks,
+            chunk: chunk
+          });
+          
+          // Small delay between chunks to prevent overwhelming postMessage
+          if (i < totalChunks - 1) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        }
+        
+        // Send end message to trigger processing
+        this.streamlabs.postMessage('loadReplayChunkEnd', {});
+        console.log('SettingsView: All chunks sent, waiting for processing...');
 
         // Wait for SceneCollectionView to signal video is loaded before proceeding
+        this.exportStatus = 'Waiting for browser source...';
         await new Promise((resolve) => {
           // Store resolver for the onMessage handler to call
           this._videoLoadedResolve = resolve;
           
-          // Timeout fallback after 30 seconds (large videos take time to process)
-          setTimeout(() => {
-            if (this._videoLoadedResolve) {
-              console.warn('SettingsView: Timeout waiting for video loaded confirmation');
-              this._videoLoadedResolve = null;
-              resolve();
-            }
-          }, 30000);
+          // No timeout - wait as long as needed for large videos
+          // The process will naturally fail if there's an actual error in SceneCollectionView
         });
         
         // Ensure replay buffer is enabled and started for the export
+        this.exportStatus = 'Configuring replay buffer...';
         const enabled = await this.streamlabsOBS.v1.Replay.getEnabled();
         if (!enabled) {
           await this.streamlabsOBS.v1.Replay.setEnabled(true);
@@ -2063,6 +2105,7 @@ export default {
         
         // Navigate to Editor BEFORE starting buffer so browser source is visible/rendering
         // This ensures the camera animation is captured in the recording
+        this.exportStatus = 'Navigating to Editor...';
         if (this.streamlabsOBS.v1.App) {
           this.streamlabsOBS.v1.App.navigate('Editor');
           console.log('Navigated to Editor for export recording');
@@ -2071,23 +2114,34 @@ export default {
         }
         
         // Start the buffer
+        this.exportStatus = 'Starting replay buffer...';
         await this.streamlabsOBS.v1.Replay.startBuffer();
-        console.log('Replay buffer started for export');
+        //console.log('Replay buffer started for export');
+        
+        // Wait for buffer to fully initialize before starting playback
+        // This ensures the camera animation is captured from the beginning
+        // (bufferStartDelay is defined earlier in this function)
+        this.exportStatus = 'Waiting for buffer to initialize...';
+        await new Promise(resolve => setTimeout(resolve, bufferStartDelay));
+        //console.log(`Buffer capture delay complete (${bufferStartDelay}ms)`);
         
         // Mark as export save so fileSaved callback knows to skip ID update
         this.isExportingSave = true;
-        console.log('Export: isExportingSave set to true');
+        //console.log('Export: isExportingSave set to true');
         
         // Set up playback state
         this.isRecordingScenes = true;
         this.isExporting = false; // Loading complete, now recording
+        this.exportStatus = 'Recording playback...';
         
-        // Show notification with duration
-        this.pushNotification('INFO', `📤 Exporting scene: ${durationStr}`);
+        // Disable user camera controls during recording
+        if (this._threeControls) {
+          this._threeControls.enabled = false;
+        }
         
         // Send postMessage to start playback in SceneCollectionView
         this.streamlabs.postMessage('startVideoSourcePlaybackInBrowserSource', { isVideoSourceInBrowserSourceLoaded: true });
-        console.log('Export: Sent start playback message to SceneCollectionView');
+        //console.log('Export: Sent start playback message to SceneCollectionView');
         
         // Wait for SceneCollectionView to signal playback has ended
         await new Promise((resolve) => {
@@ -2103,8 +2157,14 @@ export default {
           }, timeoutMs);
         });
         
-        console.log('Export: Playback ended, saving replay buffer');
+        //console.log('Export: Playback ended, saving replay buffer');
         this.isRecordingScenes = false;
+        this.exportStatus = 'Saving replay...';
+        
+        // Re-enable user camera controls
+        if (this._threeControls) {
+          this._threeControls.enabled = true;
+        }
         
         // Save the replay buffer
         this.streamlabsOBS.v1.Replay.save();
@@ -2122,9 +2182,7 @@ export default {
         
         // Reset export flag
         this.isExportingSave = false;
-        
-        // Show success notification
-        this.pushNotification('SUCCESS', `✅ Export completed successfully!`);
+        this.exportStatus = '';
         
         // Cleanup the local blob URL we created for duration check
         URL.revokeObjectURL(localBlobUrl);
@@ -2134,6 +2192,11 @@ export default {
         this.pushNotification('WARNING', `⚠️ Failed to export replay`);
         this.isRecordingScenes = false;
         this.isExporting = false;
+        this.exportStatus = '';
+        // Re-enable user camera controls on error
+        if (this._threeControls) {
+          this._threeControls.enabled = true;
+        }
       }
     },
   
@@ -2237,7 +2300,7 @@ export default {
       // Total = bufferStartDelay + (scenes × sceneDuration) + ((scenes - 1) × transitionTime)
       // No transition before first scene or after last scene
       // Buffer needs extra time to ensure it captures everything
-      const bufferStartDelay = 500; // ms - time we wait after starting buffer before cycling
+      const bufferStartDelay = 50; // ms - time we wait after starting buffer before cycling
       const sceneDurationMs = (sceneCount * this.sceneDuration) + (Math.max(0, sceneCount - 1) * this.transitionTime);
       const totalDurationMs = bufferStartDelay + sceneDurationMs;
       const totalSeconds = Math.ceil(totalDurationMs / 1000); // Use ceil to ensure buffer is long enough
@@ -2336,9 +2399,10 @@ export default {
       this.playbackProgress = 0;
       this.playbackStartTime = performance.now();
       
-      // Show notification with duration
-      this.pushNotification('INFO', `▶️ Recording scenes: ${durationStr}`);
-
+      // Disable user camera controls during recording
+      if (this._threeControls) {
+        this._threeControls.enabled = false;
+      }
       
       // Start smooth progress animation
       this.animatePlaybackProgress(totalDurationMs);
@@ -2375,6 +2439,11 @@ export default {
       
       this.streamlabsOBS.v1.Replay.save();
       this.isRecordingScenes = false;
+      
+      // Re-enable user camera controls
+      if (this._threeControls) {
+        this._threeControls.enabled = true;
+      }
       
       // Clear timeout for first scene
       if (this.sceneCycleTimeout) {
@@ -2486,6 +2555,12 @@ export default {
         this.playbackElapsed = 0;
         // Set total duration from video (metadata already loaded at this point)
         this.playbackTotalDuration = video.duration * 1000; // Convert to ms
+        
+        // Disable user camera controls during preview playback
+        if (this._threeControls) {
+          this._threeControls.enabled = false;
+        }
+        
         await video.play();
         console.log('Video playing:', video.videoWidth, 'x', video.videoHeight);
         
@@ -2502,6 +2577,7 @@ export default {
         this._threeTexture.minFilter = THREE.LinearFilter;
         this._threeTexture.magFilter = THREE.LinearFilter;
         this._threeTexture.format = THREE.RGBAFormat;
+        this._threeTexture.colorSpace = THREE.SRGBColorSpace;
         
         // Update the plane material with the new video texture
         if (this._threePlane) {
@@ -2519,18 +2595,146 @@ export default {
           // Re-fit camera to the updated plane
           this.fitToRect(this._threePlane);
           
-          // Animate camera intro
-          applyCameraIntroAnimation(this._threeCamera, this._threeControls);
+          // Schedule scene-timed camera animations during video playback
+          // Uses scenesToCycle from the last recording
+          if (this.scenesToCycle.length > 0 && this._threeControls) {
+            const bufferStartDelay = 50; // Must match recording buffer delay
+            this.schedulePreviewCameraAnimations(video, bufferStartDelay, planeWidth, planeHeight);
+          }
         }
-        
-        this.pushNotification('SUCCESS', `🎬 Replay loaded on canvas!`);
       } catch (err) {
         console.error('Error displaying replay on plane:', err);
         this.pushNotification('WARNING', `⚠️ Failed to load replay video`);
       }
     },
     
+    /**
+     * Schedule camera animations to match scene timing during video preview playback
+     * Each scene gets its own animation triggered at the right time in the video
+     */
+    schedulePreviewCameraAnimations(video, bufferStartDelay, planeWidth, planeHeight) {
+      // Clear any existing scheduled animations
+      if (this._previewAnimationTimeouts) {
+        this._previewAnimationTimeouts.forEach(t => clearTimeout(t));
+      }
+      this._previewAnimationTimeouts = [];
+      
+      const sceneCount = this.scenesToCycle.length;
+      console.log(`Scheduling ${sceneCount} camera animations for preview playback`);
+      
+      // Calculate when each scene starts in the video
+      // Video structure: bufferStartDelay + (scene1 + transition + scene2 + transition + ... + sceneN)
+      let currentTimeMs = bufferStartDelay;
+      
+      this.scenesToCycle.forEach((scene, index) => {
+        const sceneStartTime = currentTimeMs;
+        
+        // Get scene nodes for this scene
+        const sceneData = this.activeScenes.find(s => s.id === scene.id);
+        const nodes = sceneData?.nodes?.filter(n => n.display === this.displayMode && n.type !== 'folder') || [];
+        
+        console.log(`  Scene ${index + 1} "${scene.name}" starts at ${sceneStartTime}ms`);
+        
+        // Schedule animation to trigger when video reaches this scene's start time
+        const timeout = setTimeout(() => {
+          // Only trigger if video is still playing and at approximately the right time
+          if (!this.isPreviewPlaying || !video || video.paused) return;
+          
+          const videoTimeMs = video.currentTime * 1000;
+          console.log(`Triggering camera animation for scene "${scene.name}" at video time ${videoTimeMs}ms`);
+          
+          performSceneCameraAnimation(
+            this._threeControls,
+            nodes,
+            this.activeSources,
+            this.canvasBaseWidth,
+            this.canvasBaseHeight,
+            planeWidth,
+            planeHeight,
+            this.sceneDuration
+          );
+        }, sceneStartTime);
+        
+        this._previewAnimationTimeouts.push(timeout);
+        
+        // Move to next scene (add scene duration + transition time, except no transition after last scene)
+        currentTimeMs += this.sceneDuration;
+        if (index < sceneCount - 1) {
+          currentTimeMs += this.transitionTime;
+        }
+      });
+    },
+    
+    /**
+     * Build scene timing data to pass to SceneCollectionView for export camera animations
+     * Contains all info needed to trigger animations at the right times
+     */
+    buildSceneTimingData(bufferStartDelay) {
+      const sceneTimingData = {
+        bufferStartDelay,
+        sceneDuration: this.sceneDuration,
+        transitionTime: this.transitionTime,
+        canvasWidth: this.canvasBaseWidth,
+        canvasHeight: this.canvasBaseHeight,
+        displayMode: this.displayMode,
+        scenes: []
+      };
+      
+      let currentTimeMs = bufferStartDelay;
+      
+      this.scenesToCycle.forEach((scene, index) => {
+        // Get scene nodes for this scene
+        const sceneData = this.activeScenes.find(s => s.id === scene.id);
+        const nodes = sceneData?.nodes?.filter(n => n.display === this.displayMode && n.type !== 'folder') || [];
+        
+        // Build minimal node/source data for camera animation
+        const sceneInfo = {
+          name: scene.name,
+          startTimeMs: currentTimeMs,
+          nodes: nodes.map(node => {
+            const source = this.activeSources.find(s => s.id === node.sourceId);
+            return {
+              sourceId: node.sourceId,
+              visible: node.visible,
+              transform: node.transform,
+              source: source ? {
+                id: source.id,
+                name: source.name,
+                type: source.type,
+                size: source.size
+              } : null
+            };
+          }).filter(n => n.source)
+        };
+        
+        sceneTimingData.scenes.push(sceneInfo);
+        
+        // Move to next scene
+        currentTimeMs += this.sceneDuration;
+        if (index < this.scenesToCycle.length - 1) {
+          currentTimeMs += this.transitionTime;
+        }
+      });
+      
+      console.log('Built scene timing data:', sceneTimingData);
+      return sceneTimingData;
+    },
+    
     restoreWireframeView() {
+      // Clear scheduled preview animations
+      if (this._previewAnimationTimeouts) {
+        this._previewAnimationTimeouts.forEach(t => clearTimeout(t));
+        this._previewAnimationTimeouts = [];
+      }
+      
+      // Cancel all running camera animations immediately
+      cancelAllAnimations();
+      
+      // Re-enable user camera controls
+      if (this._threeControls) {
+        this._threeControls.enabled = true;
+      }
+      
       // Cleanup replay video
       if (this._replayVideo) {
         this._replayVideo.pause();
@@ -2619,7 +2823,6 @@ export default {
           console.log('Switched to scene:', scene.name, `(${this.currentSceneIndex + 1}/${this.scenesToCycle.length})`);
           // Update the UI to reflect the new active scene
           await this.selectActiveScene(scene.id);
-          //await this.reloadActiveCollection();
         } catch (err) {
           console.error('Error switching scene:', err);
         }
@@ -2639,7 +2842,6 @@ export default {
         console.log('Scene cycling complete - all scenes played');
         
         // Show success notification
-        this.pushNotification('SUCCESS', `✅ Scenes finished recording successfully!`);
         this.streamlabsOBS.v1.Notifications.push({
           message: `✅ Scenes finished recording successfully!`,
           type: 'SUCCESS',
@@ -3164,6 +3366,23 @@ export default {
   position: absolute;
   left: -9999px;
   visibility: hidden;
+}
+
+/* 2px progress bar overlay at bottom of canvas */
+.canvas-progress-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 5;
+}
+
+.canvas-progress-fill {
+  height: 100%;
+  background: var(--teal);
+  transition: width 0.1s linear;
 }
 
 /* Resize handle */
@@ -3700,6 +3919,20 @@ export default {
   border-color: rgb(56, 189, 248);
 }
 
+/* Export Status Text */
+.export-status {
+  font-size: 0.8rem;
+  color: var(--teal);
+  font-style: italic;
+  white-space: nowrap;
+  animation: fadeInOut 1.5s ease-in-out infinite;
+}
+
+@keyframes fadeInOut {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 /* Playback Progress Section */
 .playback-progress-section {
   background: transparent;
@@ -3743,18 +3976,20 @@ export default {
   height: 12px;
   background: var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: visible;
   min-width: 50px;
   flex: 1;
 }
 
 .scene-divider {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%; 
+  border: 2px solid var(--dashboard-bg);
   background: var(--paragraph);
-  opacity: 0.5;
   pointer-events: none;
 }
 
