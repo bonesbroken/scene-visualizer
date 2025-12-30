@@ -43,6 +43,36 @@
         ></canvas>
         <!-- Three.js WebGL renderer canvas -->
         <div ref="threeContainer" class="three-container"></div>
+        <!-- Watermark overlay -->
+        <div 
+          v-if="watermarkEnabled && (isPreviewPlaying || isRecordingScenes)" 
+          class="watermark-overlay"
+          :class="watermarkPositionClass"
+        >
+          <div 
+            class="watermark-content" 
+            :class="'watermark-layout-' + watermarkLayout" 
+            :style="{ transform: 'scale(' + watermarkSize + ')', transformOrigin: watermarkTransformOrigin }"
+            v-if="isPreviewPlaying"
+          >
+            <img 
+              v-if="isWatermarkImage" 
+              :src="watermarkImageSrc" 
+              class="watermark-image" 
+              alt="Watermark"
+            />
+            <video 
+              v-else 
+              :src="watermarkImageSrc" 
+              class="watermark-video" 
+              autoplay 
+              loop 
+              muted 
+              playsinline
+            ></video>
+            <span v-if="watermarkTitle" class="watermark-title">{{ watermarkTitle }}</span>
+          </div>
+        </div>
         <!-- 2px progress bar at bottom -->
         <div v-if="isRecordingScenes || isPreviewPlaying" class="canvas-progress-overlay">
           <div class="canvas-progress-fill" :style="{ width: playbackProgress + '%' }"></div>
@@ -91,7 +121,7 @@
             class="playback-btn preview-btn"
             :class="{ active: isPreviewPlaying }"
             :disabled="isRecordingScenes"
-            @click="isPreviewPlaying ? stopPreview() : displayPreviewOnPlane()"
+            @click="isPreviewPlaying ? stopPreview() : showExportModal = true"
           >
             <span :class="isPreviewPlaying ? 'fa-solid fa-stop' : 'icon-replay-buffer'"></span>
             {{ isPreviewPlaying ? 'Stop' : 'Preview' }}
@@ -100,7 +130,7 @@
             v-if="lastReplayBufferFileId"
             class="playback-btn export-btn"
             :disabled="isPreviewPlaying || isRecordingScenes || isExporting"
-            @click="exportReplayToScene()"
+            @click="exportReplayToScene"
           >
             <span v-if="isExporting" class="spinner-small"></span>
             <span v-else class="icon-save"></span>
@@ -110,26 +140,63 @@
         </div>
       </div>
       <!-- Playback Controls Section - Full Width Row -->
-      <div v-if="isRecordingScenes || isPreviewPlaying" class="playback-controls-section full-width">
+      <div v-if="isRecordingScenes || isPreviewPlaying || lastReplayBufferFileId" class="playback-controls-section full-width">
         <div class="playback-progress-section">
-          <span v-if="isPreviewPlaying" class="icon-replay-buffer playback-icon"></span>
-          <img v-else :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="playback-icon-svg" alt="" />
+
           <div class="playback-progress-bar">
             <div 
               class="playback-progress-fill" 
               :style="{ width: playbackProgress + '%' }"
             ></div>
             <!-- Scene divider carets -->
-            <template v-if="(isRecordingScenes || isPreviewPlaying) && scenesToCycle.length > 1">
+            <!-- Scene dividers - show during recording, preview, or when replay exists -->
+            <template v-if="(isRecordingScenes || isPreviewPlaying || lastReplayBufferFileId) && playableScenes.length > 1">
               <div 
-                v-for="n in (scenesToCycle.length - 1)" 
-                :key="n" 
+                v-for="n in (playableScenes.length - 1)" 
+                :key="'scene-' + n" 
                 class="scene-divider" 
-                :style="{ left: (n / scenesToCycle.length * 100) + '%' }"
+                :style="{ left: (n / playableScenes.length * 100) + '%' }"
               ><i class="fa-solid fa-caret-down"></i></div>
             </template>
+            <!-- Animation markers for cut/zoom behavior - only during preview, not recording -->
+            <template v-if="previewCameraTimeline">
+              <template v-for="(sceneTimeline, sceneIndex) in previewCameraTimeline.scenes" :key="'anim-scene-' + sceneIndex">
+                <template v-for="(anim, animIndex) in sceneTimeline.animations.filter(a => a.type === 'animate')" :key="'anim-' + sceneIndex + '-' + animIndex">
+                  <!-- Animation start marker -->
+                  <div 
+                    class="animation-marker animation-marker-start" 
+                    :class="{ 'cut-mode': targetBehavior === 'cut', 'zoom-mode': targetBehavior === 'zoom' }"
+                    :style="{ left: getAnimationMarkerPosition(sceneTimeline, anim, 'start') + '%' }"
+                  ></div>
+                  <!-- Animation end marker -->
+                  <div 
+                    class="animation-marker animation-marker-end" 
+                    :class="{ 'cut-mode': targetBehavior === 'cut', 'zoom-mode': targetBehavior === 'zoom' }"
+                    :style="{ left: getAnimationMarkerPosition(sceneTimeline, anim, 'end') + '%' }"
+                  ></div>
+                  <!-- Connecting region with easing curve -->
+                  <div 
+                    class="animation-connector"
+                    :class="{ 'cut-mode': targetBehavior === 'cut', 'zoom-mode': targetBehavior === 'zoom' }"
+                    :style="{ 
+                      left: getAnimationMarkerPosition(sceneTimeline, anim, 'start') + '%',
+                      width: (getAnimationMarkerPosition(sceneTimeline, anim, 'end') - getAnimationMarkerPosition(sceneTimeline, anim, 'start')) + '%'
+                    }"
+                  >
+                    <!-- Easing curve SVG -->
+                    <svg class="easing-curve" viewBox="0 0 100 100" preserveAspectRatio="none">
+                      <path 
+                        :d="getEasingCurvePath(anim.easing)" 
+                        class="easing-curve-path"
+                        :class="{ 'cut-mode': targetBehavior === 'cut', 'zoom-mode': targetBehavior === 'zoom' }"
+                      />
+                    </svg>
+                  </div>
+                </template>
+              </template>
+            </template>
           </div>
-          <span class="playback-timecode">{{ formatPlaybackTime(playbackElapsed) }} / {{ formatPlaybackTime(playbackTotalDuration) }}</span>
+          <span class="playback-timecode">{{ formatPlaybackTime(displayPlaybackElapsed) }} / {{ formatPlaybackTime(displayPlaybackTotalDuration) }}</span>
         </div>
       </div>
       
@@ -167,7 +234,20 @@
                 <span :class="excludedSceneIds[scene.id] ? 'icon-hide' : 'icon-view'"></span>
               </button>
               <span class="item-name">{{ scene.name }}</span>
-              <span class="active-indicator" v-if="activeSceneData?.id === scene.id">●</span>
+              <i 
+                v-if="sceneHasSourceTarget(scene.id)" 
+                class="fa-solid fa-bullseye source-target-icon" 
+                title="Contains camera focus target"
+              ></i>
+              <input 
+                type="radio" 
+                name="active-scene" 
+                class="active-scene-radio" 
+                :checked="activeSceneData?.id === scene.id"
+                :disabled="isRecordingScenes || isPreviewPlaying"
+                @click.stop="setSceneAsActive(scene.id)"
+                title="Set as active scene"
+              />
             </div>
             <div v-if="!activeScenes.length" class="empty-state">
               No scenes
@@ -200,54 +280,43 @@
           </div>
           <div class="column-content">
             <template v-if="activeSelectedSceneId">
-              <template v-for="item in getActiveSceneSourcesWithTransform()" :key="item.nodeId">
+              <template v-for="item in getFlattenedSourcesList()" :key="item.nodeId">
                 <!-- Folder item -->
                 <template v-if="item.isFolder">
                   <div 
                     class="source-list-item expandable folder-item"
                     :class="{ 'expanded': expandedFolders[item.nodeId] }"
+                    :style="{ paddingLeft: (12 + item.depth * 16) + 'px' }"
                     @click="toggleFolder(item.nodeId)"
                   >
                     <div class="source-header">
                       <span class="item-icon" :class="expandedFolders[item.nodeId] ? 'fa-solid fa-folder-open' : 'fa-solid fa-folder'"></span>
-                      <span class="item-name">{{ item.name }} ({{ item.children.length }})</span>
+                      <span class="item-name">{{ item.name }} ({{ item.childCount }})</span>
+                      <i v-if="folderContainsSourceTarget(item)" class="fa-solid fa-bullseye source-target-icon folder-target" title="Contains camera focus target"></i>
                       <span class="toggle-icon icon-down" :class="{ 'rotated': expandedFolders[item.nodeId] }"></span>
                     </div>
                   </div>
-                  <!-- Folder children -->
-                  <template v-if="expandedFolders[item.nodeId]">
-                    <div 
-                      v-for="child in item.children" 
-                      :key="child.nodeId" 
-                      class="source-list-item expandable folder-child"
-                      :class="{ 'expanded': expandedActiveSources[child.nodeId] }"
-                      @click="toggleActiveSource(child.nodeId)"
-                    >
-                      <div class="source-header">
-                        <span class="item-icon" :class="isIconClass(getSourceIconFromSource(child.source)) ? getSourceIconFromSource(child.source) : ''">{{ isIconClass(getSourceIconFromSource(child.source)) ? '' : getSourceIconFromSource(child.source) }}</span>
-                        <span class="item-name">{{ child.source.name }}</span>
-                        <span class="toggle-icon icon-down" :class="{ 'rotated': expandedActiveSources[child.nodeId] }"></span>
-                      </div>
-                      <div v-if="expandedActiveSources[child.nodeId]" class="source-settings" @click.stop>
-                        <div v-if="activeSourceSettings[child.nodeId] === 'loading'" class="settings-loading">
-                          Loading settings...
-                        </div>
-                        <pre v-else-if="activeSourceSettings[child.nodeId]" class="settings-json">{{ formatSettingsWithTransform(activeSourceSettings[child.nodeId], child.source, child.transform) }}</pre>
-                        <div v-else class="settings-empty">No settings available</div>
-                      </div>
-                    </div>
-                  </template>
                 </template>
                 <!-- Regular source item -->
                 <div 
                   v-else
                   class="source-list-item expandable"
-                  :class="{ 'expanded': expandedActiveSources[item.nodeId] }"
+                  :class="{ 'expanded': expandedActiveSources[item.nodeId], 'folder-child': item.depth > 0 }"
+                  :style="{ paddingLeft: (12 + item.depth * 16) + 'px' }"
                   @click="toggleActiveSource(item.nodeId)"
                 >
                   <div class="source-header">
                     <span class="item-icon" :class="isIconClass(getSourceIconFromSource(item.source)) ? getSourceIconFromSource(item.source) : ''">{{ isIconClass(getSourceIconFromSource(item.source)) ? '' : getSourceIconFromSource(item.source) }}</span>
                     <span class="item-name">{{ item.source.name }}</span>
+                    <i v-if="isSourceTarget(item.source)" class="fa-solid fa-bullseye source-target-icon" title="Camera focus target"></i>
+                    <button 
+                      class="set-target-btn"
+                      :class="{ 'is-target': isSourceTarget(item.source) }"
+                      @click.stop="toggleSourceTarget(item.source)"
+                      :title="isSourceTarget(item.source) ? 'Remove as camera focus target' : 'Set as camera focus target'"
+                    >
+                      <i class="fa-solid fa-bullseye"></i>
+                    </button>
                     <span class="toggle-icon icon-down" :class="{ 'rotated': expandedActiveSources[item.nodeId] }"></span>
                   </div>
                   <div v-if="expandedActiveSources[item.nodeId]" class="source-settings" @click.stop>
@@ -259,7 +328,7 @@
                   </div>
                 </div>
               </template>
-              <div v-if="!getActiveSceneSourcesWithTransform().length" class="empty-state">
+              <div v-if="!getFlattenedSourcesList().length" class="empty-state">
                 No sources in this scene
               </div>
             </template>
@@ -334,10 +403,11 @@
         </div>
         <div class="modal-body">
           <div class="tree-container">
-            <div v-for="collection in sceneCollectionsSchema" :key="collection.id" class="collection">
+            <div v-for="collection in sortedSceneCollections" :key="collection.id" class="collection" :class="{ 'is-active-collection': isActiveCollection(collection.id) }">
               <div class="collection-header" @click="toggleCollection(collection.id)">
                 <span class="collection-icon" :class="expandedCollections[collection.id] ? 'fas fa-folder-open' : 'fas fa-folder'"></span>
                 <span class="collection-name">{{ collection.name }}</span>
+                <span v-if="isActiveCollection(collection.id)" class="active-collection-badge">Active</span>
                 <span class="toggle-icon icon-down" :class="{ 'rotated': expandedCollections[collection.id] }"></span>
                 
               </div>
@@ -355,10 +425,14 @@
                         v-for="scene in collection.scenes" 
                         :key="scene.id" 
                         class="scene-list-item"
-                        :class="{ 'selected': selectedScenes[collection.id] === scene.id }"
+                        :class="{ 
+                          'selected': selectedScenes[collection.id] === scene.id,
+                          'is-active': isActiveCollection(collection.id) && isActiveSceneInCollection(scene.id)
+                        }"
                         @click="selectScene(collection.id, scene.id)"
                       >
                         <span class="item-name">{{ scene.name }}</span>
+                        <i v-if="isActiveCollection(collection.id) && isActiveSceneInCollection(scene.id)" class="fas fa-broadcast-tower active-scene-icon" title="Currently active scene"></i>
                       </div>
                       <div v-if="!collection.scenes?.length" class="empty-state">
                         No scenes
@@ -373,15 +447,41 @@
                     </div>
                     <div class="column-content">
                       <template v-if="selectedScenes[collection.id]">
-                        <div 
-                          v-for="item in getSelectedSceneItems(collection)" 
-                          :key="item.id" 
-                          class="source-list-item"
-                        >
-                          <span class="item-icon" :class="isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? getSourceIcon(item.sourceId, collection.sources) : ''">{{ isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? '' : getSourceIcon(item.sourceId, collection.sources) }}</span>
-                          <span class="item-name">{{ getSourceName(item.sourceId, collection.sources) }}</span>
-                        </div>
-                        <div v-if="!getSelectedSceneItems(collection)?.length" class="empty-state">
+                        <template v-for="item in getSelectedSceneItemsWithFolders(collection)" :key="item.id || item.nodeId">
+                          <!-- Folder item -->
+                          <div 
+                            v-if="item.isFolder" 
+                            class="source-list-item folder-item"
+                            :style="{ paddingLeft: (item.depth * 16 + 8) + 'px' }"
+                            @click="toggleCollectionFolder(collection.id, item.nodeId)"
+                          >
+                            <span class="item-icon" :class="expandedCollectionFolders[collection.id + '-' + item.nodeId] ? 'fas fa-folder-open' : 'fas fa-folder'"></span>
+                            <span class="item-name">{{ item.name }}</span>
+                            <span class="folder-count">({{ item.children?.length || 0 }})</span>
+                          </div>
+                          <!-- Folder children (if expanded) -->
+                          <template v-if="item.isFolder && expandedCollectionFolders[collection.id + '-' + item.nodeId]">
+                            <div 
+                              v-for="child in item.children" 
+                              :key="child.id || child.nodeId" 
+                              class="source-list-item"
+                              :style="{ paddingLeft: (child.depth * 16 + 8) + 'px' }"
+                            >
+                              <span class="item-icon" :class="isIconClass(getSourceIcon(child.sourceId, collection.sources)) ? getSourceIcon(child.sourceId, collection.sources) : ''">{{ isIconClass(getSourceIcon(child.sourceId, collection.sources)) ? '' : getSourceIcon(child.sourceId, collection.sources) }}</span>
+                              <span class="item-name">{{ getSourceName(child.sourceId, collection.sources) }}</span>
+                            </div>
+                          </template>
+                          <!-- Regular source item -->
+                          <div 
+                            v-if="!item.isFolder" 
+                            class="source-list-item"
+                            :style="{ paddingLeft: (item.depth * 16 + 8) + 'px' }"
+                          >
+                            <span class="item-icon" :class="isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? getSourceIcon(item.sourceId, collection.sources) : ''">{{ isIconClass(getSourceIcon(item.sourceId, collection.sources)) ? '' : getSourceIcon(item.sourceId, collection.sources) }}</span>
+                            <span class="item-name">{{ getSourceName(item.sourceId, collection.sources) }}</span>
+                          </div>
+                        </template>
+                        <div v-if="!getSelectedSceneItemsWithFolders(collection)?.length" class="empty-state">
                           No sources in this scene
                         </div>
                       </template>
@@ -415,16 +515,19 @@
             <div class="setting-row">
               <label class="setting-label">
                 <span class="icon-time"></span>
-                Scene Duration (ms)
+                Scene Duration
               </label>
-              <input 
-                type="number" 
-                class="setting-input"
-                v-model.number="sceneDuration"
-                min="1000"
-                max="60000"
-                step="500"
-              />
+              <div class="slider-with-value">
+                <input 
+                  type="range" 
+                  class="setting-slider"
+                  v-model.number="sceneDurationSeconds"
+                  min="1"
+                  max="10"
+                  step="1"
+                />
+                <span class="slider-value">{{ sceneDurationSeconds }}s</span>
+              </div>
             </div>
             <!-- Transition time hidden - using 0ms for instant transitions -->
             <div class="setting-info">
@@ -436,7 +539,7 @@
         <div class="modal-footer">
           <div v-if="outputFilePath" class="output-path-note">
             <span class="icon-folder"></span>
-            Videos output destination: {{ outputFilePath }}
+            Video output destination: {{ outputFilePath }}
           </div>
           <div class="modal-actions">
             <button class="modal-btn cancel-btn" @click="showRecordingModal = false">
@@ -445,6 +548,199 @@
             <button class="modal-btn start-btn" @click="confirmStartRecording">
               <img :src="currentTheme === 'day' ? 'assets/icon/record-day.svg' : 'assets/icon/record-night.svg'" class="btn-icon-svg" alt="" />
               Start Recording
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export Settings Modal -->
+    <div v-if="showExportModal" class="modal-overlay" @click.self="showExportModal = false">
+      <div class="modal-content export-modal">
+        <div class="modal-header">
+          <h2 class="modal-title">
+            <span class="icon-replay-buffer"></span>
+            Preview Settings
+          </h2>
+          <button class="modal-close" @click="showExportModal = false">
+            <span class="icon-close"></span>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="export-settings">
+            <!-- Watermark Section Toggle -->
+            <div class="setting-row setting-section-toggle" @click="showWatermarkSettings = !showWatermarkSettings">
+              <span class="section-toggle-label">
+                <span class="icon-image"></span>
+                Watermark
+              </span>
+              <span :class="['toggle-chevron', { 'expanded': showWatermarkSettings }]">
+                <span class="icon-down"></span>
+              </span>
+            </div>
+            
+            <!-- Watermark Settings (shown when toggle is expanded) -->
+            <div v-if="showWatermarkSettings" class="watermark-settings">
+              <!-- Enable Checkbox -->
+              <div class="setting-row">
+                <span class="checkbox-label-text">Enable</span>
+                <label class="setting-checkbox-label">
+                  
+                  <input 
+                    type="checkbox" 
+                    v-model="watermarkEnabled"
+                    @change="saveWatermarkPreferences"
+                  />
+                  <span class="checkbox-custom"></span>
+                </label>
+              </div>
+              <!-- Watermark Image -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Media
+                </label>
+                <button class="watermark-preview-btn" @click="openWatermarkFilePicker" title="Click to select media">
+                  <img 
+                    v-if="isWatermarkImage" 
+                    :src="watermarkImageSrc" 
+                    alt="Watermark preview"
+                  />
+                  <video 
+                    v-else 
+                    :src="watermarkImageSrc" 
+                    muted 
+                    loop
+                    autoplay
+                    playsinline
+                  ></video>
+                  <div class="preview-overlay">
+                    <span class="icon-upload"></span>
+                  </div>
+                </button>
+                <input 
+                  ref="watermarkFileInput" 
+                  type="file" 
+                  accept=".png,.jpg,.jpeg,.gif,.mp4,.webm" 
+                  style="display: none;"
+                  @change="handleWatermarkFileSelect"
+                />
+              </div>
+              
+              <!-- Watermark Layout -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Layout
+                </label>
+                <select 
+                  class="setting-select"
+                  v-model="watermarkLayout"
+                  @change="saveWatermarkPreferences"
+                >
+                  <option value="stacked">Image above Text</option>
+                  <option value="inline">Image beside Text</option>
+                </select>
+              </div>
+              
+              <!-- Watermark Size -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Size
+                </label>
+                <div class="slider-with-value">
+                  <input 
+                    type="range" 
+                    class="setting-slider"
+                    v-model.number="watermarkSize"
+                    @input="saveWatermarkPreferences"
+                    min="1"
+                    max="4"
+                    step="0.5"
+                  />
+                  <span class="slider-value">{{ watermarkSize }}x</span>
+                </div>
+              </div>
+              
+              <!-- Watermark Title -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Title
+                </label>
+                <input 
+                  type="text" 
+                  class="setting-input"
+                  v-model="watermarkTitle"
+                  @change="saveWatermarkPreferences"
+                  placeholder="Enter watermark title..."
+                />
+              </div>
+              
+              <!-- Watermark Position -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Position
+                </label>
+                <select 
+                  class="setting-select"
+                  v-model="watermarkPosition"
+                  @change="saveWatermarkPreferences"
+                >
+                  <option value="top-left">Top Left</option>
+                  <option value="top-center">Top Center</option>
+                  <option value="top-right">Top Right</option>
+                  <option value="bottom-left">Bottom Left</option>
+                  <option value="bottom-center">Bottom Center</option>
+                  <option value="bottom-right">Bottom Right</option>
+                </select>
+              </div>
+              
+              <!-- Watermark Duration -->
+              <div class="setting-row">
+                <label class="setting-label">
+                  Duration
+                </label>
+                <select 
+                  class="setting-select"
+                  v-model="watermarkDuration"
+                  @change="saveWatermarkPreferences"
+                >
+                  <option value="always">Always</option>
+                  <option value="5">5 Seconds</option>
+                  <option value="10">10 Seconds</option>
+                </select>
+              </div>
+            </div>
+            
+            <!-- Target Behavior (outside watermark section) -->
+            <div class="setting-row">
+              <label class="setting-label">
+                <i 
+                class="fa-solid fa-bullseye source-target-icon" 
+              ></i>
+                Source Target Behavior
+              </label>
+              <select 
+                class="setting-select"
+                v-model="targetBehavior"
+                @change="saveWatermarkPreferences"
+              >
+                <option value="zoom">Zoom</option>
+                <option value="cut">Cut</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <div v-if="outputFilePath" class="output-path-note">
+            <span class="icon-folder"></span>
+            Video output destination: {{ outputFilePath }}
+          </div>
+          <div class="modal-actions">
+            <button class="modal-btn cancel-btn" @click="showExportModal = false">
+              Cancel
+            </button>
+            <button class="modal-btn start-btn" @click="previewFromModal">
+              <span class="icon-replay-buffer"></span>
+              Preview Video
             </button>
           </div>
         </div>
@@ -461,7 +757,7 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import { markRaw } from 'vue';
-import { performSceneCameraAnimation, cancelAllAnimations, buildCameraTimeline } from '@/utils/cameraAnimations';
+import { performSceneCameraAnimation, cancelAllAnimations, buildCameraTimeline, executeSceneTimeline, getZoomDurations, getZoomTotalDuration } from '@/utils/cameraAnimations';
 
 // Install CameraControls with THREE
 CameraControls.install({ THREE: THREE });
@@ -500,6 +796,18 @@ export default {
       displayMode: 'horizontal', // 'horizontal' or 'vertical'
       currentTheme: null, // 'day' or 'night' - null until API responds
       showCollectionsModal: false, // Scene collections modal visibility
+      showExportModal: false, // Export modal visibility
+      showWatermarkSettings: true, // Toggle to show/hide watermark settings section
+      
+      // Watermark settings
+      watermarkEnabled: true,
+      watermarkImage: '', // User-uploaded watermark image path (empty = use default)
+      watermarkLayout: 'stacked', // stacked (image above text) or inline (image beside text)
+      watermarkSize: 1, // Scale factor 1x to 4x
+      watermarkTitle: 'Theme from Streamlabs Library',
+      watermarkPosition: 'top-left', // top-left, top-center, top-right, bottom-left, bottom-center, bottom-right
+      watermarkDuration: 'always', // always, 5, 10
+      targetBehavior: 'zoom', // 'zoom' or 'cut'
       
       // Notifications demo
       notificationLog: [],
@@ -521,22 +829,27 @@ export default {
       isStartingRecording: false, // Loading state for record button
       showRecordingModal: false,
       sceneCycleTimeout: null, // Timeout for first scene
-      sceneCycleInterval: null,
+      sceneCycleInterval: null, // Interval for subsequent scenes
       currentSceneIndex: 0,
       scenesToCycle: [], // Snapshot of scenes to play during a cycle
       sceneDuration: 5000,
-      transitionTime: 0,
+      transitionTime: 0, // Legacy: kept for API compatibility but no longer used (instant cuts)
       playbackProgress: 0,
       playbackStartTime: null,
       playbackAnimationId: null,
       playbackElapsed: 0,
       playbackTotalDuration: 0,
       excludedSceneIds: {}, // Track which scene IDs are excluded from cycling
+      customSourceTargets: {}, // Track manually set source targets by sourceId
+      activeCollectionId: null, // ID of the currently active scene collection
+      collectionSourceTargets: {}, // Store source targets per collection ID: { collectionId: { sourceId: boolean } }
+      previewCameraTimeline: null, // Camera timeline for preview/recording progress bar visualization
       
       // Replay buffer
       lastReplayBufferFileId: null,
       replaySaveResolver: null,
       isPreviewPlaying: false,
+      previewWasCancelled: false, // Flag to track if preview was manually cancelled
       isExportingSave: false, // Flag to prevent updating lastReplayBufferFileId during export
       exportStatus: '', // Status text shown during export process
       recordStatus: '', // Status text shown during recording process
@@ -555,6 +868,7 @@ export default {
       // Tree expansion state
       expandedCollections: {},
       expandedFolders: {}, // Track which folder sources are expanded
+      expandedCollectionFolders: {}, // Track which folders in collection modal are expanded
       // Selected scene per collection
       selectedScenes: {},
       
@@ -684,22 +998,138 @@ export default {
       if (!this.currentTheme) return 'night-theme';
       return this.currentTheme === 'day' ? 'day-theme' : 'night-theme';
     },
+    /**
+     * Sort scene collections with active collection first
+     */
+    sortedSceneCollections() {
+      if (!this.sceneCollectionsSchema?.length) return [];
+      
+      return [...this.sceneCollectionsSchema].sort((a, b) => {
+        const aIsActive = this.isActiveCollection(a.id);
+        const bIsActive = this.isActiveCollection(b.id);
+        
+        if (aIsActive && !bIsActive) return -1;
+        if (!aIsActive && bIsActive) return 1;
+        return 0;
+      });
+    },
     playableScenes() {
       // Filter out excluded scenes
       return this.activeScenes.filter(scene => !this.excludedSceneIds[scene.id]);
     },
     expectedRecordingDuration() {
       const sceneCount = this.playableScenes.length;
-      // Total = bufferStartDelay + (scenes × sceneDuration) + ((scenes - 1) × transitionTime)
-      // No transition before first scene or after last scene
       const bufferStartDelay = 50; // ms - must match startSceneCycling
-      const sceneDurationMs = (sceneCount * this.sceneDuration) + (Math.max(0, sceneCount - 1) * this.transitionTime);
-      const totalMs = bufferStartDelay + sceneDurationMs;
-      const totalSeconds = totalMs / 1000;
+      
+      // Base duration: bufferStartDelay + (scenes × sceneDuration)
+      let totalMs = bufferStartDelay + (sceneCount * this.sceneDuration);
+      
+      const totalSeconds = Math.ceil(totalMs / 1000);
       const mins = Math.floor(totalSeconds / 60);
-      const secs = (totalSeconds % 60).toFixed(1);
+      const secs = totalSeconds % 60;
       
       return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    },
+    
+    /**
+     * Calculate expected recording duration in milliseconds
+     * Used for setting replay buffer duration and progress animations
+     */
+    expectedRecordingDurationMs() {
+      const sceneCount = this.playableScenes.length;
+      const bufferStartDelay = 50; // ms - must match startSceneCycling
+      
+      // Base duration: bufferStartDelay + (scenes × sceneDuration)
+      let totalMs = bufferStartDelay + (sceneCount * this.sceneDuration);
+      
+      return totalMs;
+    },
+    
+    /**
+     * Display total duration for timecode
+     * When replay exists but not actively playing, show expected duration
+     */
+    displayPlaybackTotalDuration() {
+      // If preview was cancelled, show 0
+      if (this.previewWasCancelled) {
+        return 0;
+      }
+      // If we have actual playback duration (recording/playing), use it
+      if (this.playbackTotalDuration > 0) {
+        return this.playbackTotalDuration;
+      }
+      // If replay exists but not playing, show expected duration
+      if (this.lastReplayBufferFileId) {
+        return this.expectedRecordingDurationMs;
+      }
+      return 0;
+    },
+    
+    /**
+     * Display elapsed time for timecode
+     * When replay exists but not actively playing, show full duration (completed)
+     */
+    displayPlaybackElapsed() {
+      // If preview was cancelled, show 0
+      if (this.previewWasCancelled) {
+        return 0;
+      }
+      // If actively recording/playing, use live elapsed time
+      if (this.isRecordingScenes || this.isPreviewPlaying) {
+        return this.playbackElapsed;
+      }
+      // If replay exists and progress is at 100%, show full duration
+      if (this.lastReplayBufferFileId && this.playbackProgress >= 100) {
+        return this.displayPlaybackTotalDuration;
+      }
+      return this.playbackElapsed;
+    },
+    
+    watermarkImageSrc() {
+      // Return user-uploaded image or default
+      return this.watermarkImage || 'assets/img/Streamlabs App Icon.png';
+    },
+    isWatermarkImage() {
+      const src = this.watermarkImageSrc;
+      
+      // Check for data URL first (uploaded files)
+      if (src.startsWith('data:')) {
+        // Extract mime type from data URL: data:image/png;base64,... or data:video/mp4;base64,...
+        const mimeMatch = src.match(/^data:([^;,]+)/);
+        if (mimeMatch) {
+          const mimeType = mimeMatch[1].toLowerCase();
+          return mimeType.startsWith('image/');
+        }
+        return true; // Default to image if can't parse
+      }
+      
+      // For regular file paths, check extension
+      const ext = src.split('.').pop().toLowerCase().split('?')[0];
+      return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+    },
+    watermarkPositionClass() {
+      return `watermark-${this.watermarkPosition}`;
+    },
+    watermarkTransformOrigin() {
+      // Set transform origin based on position so scaling expands away from corner/edge
+      const origins = {
+        'top-left': 'top left',
+        'top-center': 'top center',
+        'top-right': 'top right',
+        'bottom-left': 'bottom left',
+        'bottom-center': 'bottom center',
+        'bottom-right': 'bottom right'
+      };
+      return origins[this.watermarkPosition] || 'center';
+    },
+    sceneDurationSeconds: {
+      get() {
+        // Round to 1 decimal place to avoid floating-point precision issues
+        return Math.round(this.sceneDuration / 100) / 10;
+      },
+      set(value) {
+        this.sceneDuration = Math.round(value * 1000);
+      }
     }
   },
   async mounted() {
@@ -1272,6 +1702,47 @@ export default {
         [sceneId]: !this.excludedSceneIds[sceneId]
       };
     },
+    
+    async setSceneAsActive(sceneId) {
+      if (!this.streamlabsOBS || !sceneId) return;
+      
+      try {
+        console.log('SettingsView: Setting scene as active:', sceneId);
+        await this.streamlabsOBS.v1.Scenes.makeSceneActive(sceneId);
+        
+        // Update local state
+        const scene = this.activeScenes.find(s => s.id === sceneId);
+        if (scene) {
+          this.activeSceneData = scene;
+        }
+      } catch (err) {
+        console.error('SettingsView: Error setting scene as active:', err);
+      }
+    },
+    
+    sceneHasSourceTarget(sceneId) {
+      const scene = this.activeScenes.find(s => s.id === sceneId);
+      if (!scene?.nodes) return false;
+      
+      return scene.nodes.some(node => {
+        const source = this.activeSources.find(s => s.id === node.sourceId);
+        if (!source) return false;
+        
+        // Use isSourceTarget to check (respects customSourceTargets)
+        return this.isSourceTarget(source);
+      });
+    },
+    
+    getSceneSourceTargetCount(sceneId) {
+      const scene = this.activeScenes.find(s => s.id === sceneId);
+      if (!scene?.nodes) return 0;
+      
+      return scene.nodes.filter(node => {
+        const source = this.activeSources.find(s => s.id === node.sourceId);
+        if (!source) return false;
+        return this.isSourceTarget(source);
+      }).length;
+    },
 
     
     getActiveSceneSources() {
@@ -1312,37 +1783,54 @@ export default {
       // Each node is unique (same source can appear multiple times with different transforms)
       const result = [];
       
+      // Helper function to recursively build folder children
+      const buildFolderChildren = (childrenIds, depth = 0) => {
+        const children = [];
+        if (!childrenIds || !Array.isArray(childrenIds)) return children;
+        
+        childrenIds.forEach(childNodeId => {
+          const childNode = scene.nodes.find(n => n.id === childNodeId && n.display === this.displayMode);
+          if (!childNode) return;
+          
+          if (childNode.type === 'folder') {
+            // Nested folder - recurse
+            children.push({
+              nodeId: childNode.id,
+              name: childNode.name,
+              isFolder: true,
+              depth: depth + 1,
+              children: buildFolderChildren(childNode.childrenIds, depth + 1)
+            });
+          } else if (childNode.sourceId) {
+            const childSource = this.activeSources.find(s => s.id === childNode.sourceId);
+            if (childSource) {
+              children.push({
+                nodeId: childNode.id,
+                source: childSource,
+                transform: childNode.transform || {},
+                isChild: true,
+                depth: depth + 1
+              });
+            }
+          }
+        });
+        return children;
+      };
+      
       scene.nodes
-        .filter(node => node.display === 'horizontal')
+        .filter(node => node.display === this.displayMode)
         .forEach(node => {
           // Skip nodes that are children of a folder (they'll be nested under folder)
           if (childrenNodeIdsSet.has(node.id)) return;
           
           if (node.type === 'folder') {
-            // For folders, build children from childrenIds (which are node IDs)
-            const children = [];
-            if (node.childrenIds && Array.isArray(node.childrenIds)) {
-              node.childrenIds.forEach(childNodeId => {
-                // Find the child node by its ID
-                const childNode = scene.nodes.find(n => n.id === childNodeId && n.display === 'horizontal');
-                if (childNode && childNode.sourceId) {
-                  const childSource = this.activeSources.find(s => s.id === childNode.sourceId);
-                  if (childSource) {
-                    children.push({
-                      nodeId: childNode.id,
-                      source: childSource,
-                      transform: childNode.transform || {},
-                      isChild: true
-                    });
-                  }
-                }
-              });
-            }
+            // For folders, build children recursively
             result.push({
               nodeId: node.id,
-              name: node.name, // Folders have name directly on node
+              name: node.name,
               isFolder: true,
-              children
+              depth: 0,
+              children: buildFolderChildren(node.childrenIds, 0)
             });
           } else {
             // Regular source node
@@ -1351,13 +1839,153 @@ export default {
               result.push({
                 nodeId: node.id,
                 source,
-                transform: node.transform || {}
+                transform: node.transform || {},
+                depth: 0
               });
             }
           }
         });
       
       return result;
+    },
+    
+    getFlattenedSourcesList() {
+      const tree = this.getActiveSceneSourcesWithTransform();
+      const flattened = [];
+      
+      const flatten = (items, parentExpanded = true) => {
+        items.forEach(item => {
+          if (!parentExpanded) return;
+          
+          if (item.isFolder) {
+            flattened.push({
+              ...item,
+              childCount: this.countFolderChildren(item.children)
+            });
+            // Recursively flatten children if folder is expanded
+            if (this.expandedFolders[item.nodeId]) {
+              flatten(item.children, true);
+            }
+          } else {
+            flattened.push(item);
+          }
+        });
+      };
+      
+      flatten(tree);
+      return flattened;
+    },
+    
+    countFolderChildren(children) {
+      let count = 0;
+      children.forEach(child => {
+        if (child.isFolder) {
+          count += this.countFolderChildren(child.children);
+        } else {
+          count++;
+        }
+      });
+      return count;
+    },
+    
+    isSourceTarget(source) {
+      if (!source) return false;
+      
+      const isDefaultTarget = source.type === 'dshow_input' || source.type === 'macos_avcapture';
+      
+      // Check if there's an explicit custom setting (true or false)
+      if (source.id in this.customSourceTargets) {
+        return this.customSourceTargets[source.id];
+      }
+      
+      // Fall back to default behavior
+      return isDefaultTarget;
+    },
+    
+    async toggleSourceTarget(source) {
+      if (!source) return;
+      // Toggle based on current state (handles both default and custom)
+      const currentlyIsTarget = this.isSourceTarget(source);
+      this.customSourceTargets = {
+        ...this.customSourceTargets,
+        [source.id]: !currentlyIsTarget
+      };
+      
+      // Save to user preferences with collection ID
+      await this.saveSourceTargetsPreferences();
+    },
+    
+    /**
+     * Save custom source targets to user preferences
+     */
+    async saveSourceTargetsPreferences() {
+      if (!this.activeCollectionId) {
+        // Try to find active collection ID
+        this.activeCollectionId = this.getActiveCollectionId();
+      }
+      
+      if (!this.activeCollectionId) {
+        console.warn('Cannot save source targets - no active collection ID');
+        return;
+      }
+      
+      try {
+        const currentPrefs = await this.streamlabs.userSettings.get('userPreferences') || {};
+        const collectionSourceTargets = currentPrefs.collectionSourceTargets || {};
+        
+        // Update targets for current collection
+        collectionSourceTargets[this.activeCollectionId] = { ...this.customSourceTargets };
+        
+        await this.streamlabs.userSettings.set('userPreferences', {
+          ...currentPrefs,
+          collectionSourceTargets
+        });
+        
+        console.log('Saved source targets for collection:', this.activeCollectionId);
+      } catch (err) {
+        console.error('Error saving source targets:', err);
+      }
+    },
+    
+    /**
+     * Load source targets for a specific collection from user preferences
+     */
+    async loadSourceTargetsForCollection(collectionId) {
+      if (!collectionId) return;
+      
+      try {
+        const currentPrefs = await this.streamlabs.userSettings.get('userPreferences') || {};
+        const collectionSourceTargets = currentPrefs.collectionSourceTargets || {};
+        
+        if (collectionSourceTargets[collectionId]) {
+          this.customSourceTargets = { ...collectionSourceTargets[collectionId] };
+          console.log('Loaded source targets for collection:', collectionId, this.customSourceTargets);
+        } else {
+          // Reset to defaults for new collection
+          this.customSourceTargets = {};
+          console.log('No saved source targets for collection:', collectionId);
+        }
+      } catch (err) {
+        console.error('Error loading source targets:', err);
+        this.customSourceTargets = {};
+      }
+    },
+    
+    folderContainsSourceTarget(folder) {
+      if (!folder || !folder.children) return false;
+      
+      const checkChildren = (children) => {
+        for (const child of children) {
+          if (child.isFolder) {
+            if (checkChildren(child.children)) return true;
+          } else if (child.source && this.isSourceTarget(child.source)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      
+      return checkChildren(folder.children);
     },
     
     toggleFolder(folderId) {
@@ -1466,6 +2094,65 @@ export default {
       this.logSourcesAndSettings(collectionId, sceneId);
     },
     
+    toggleCollectionFolder(collectionId, folderId) {
+      const key = collectionId + '-' + folderId;
+      this.expandedCollectionFolders = {
+        ...this.expandedCollectionFolders,
+        [key]: !this.expandedCollectionFolders[key]
+      };
+    },
+    
+    /**
+     * Check if a collection is the active one
+     * Compares by checking if the collection's scenes match the active scenes
+     */
+    isActiveCollection(collectionId) {
+      const collection = this.sceneCollectionsSchema.find(c => c.id === collectionId);
+      if (!collection?.scenes?.length || !this.activeScenes?.length) return false;
+      
+      // Check if scene names match (collections use same scene structure)
+      const collectionSceneNames = collection.scenes.map(s => s.name).sort();
+      const activeSceneNames = this.activeScenes.map(s => s.name).sort();
+      
+      if (collectionSceneNames.length !== activeSceneNames.length) return false;
+      const isActive = collectionSceneNames.every((name, i) => name === activeSceneNames[i]);
+      
+      // Track the active collection ID
+      if (isActive && this.activeCollectionId !== collectionId) {
+        this.activeCollectionId = collectionId;
+      }
+      
+      return isActive;
+    },
+    
+    /**
+     * Find and return the active collection ID
+     */
+    getActiveCollectionId() {
+      for (const collection of this.sceneCollectionsSchema) {
+        if (this.isActiveCollection(collection.id)) {
+          return collection.id;
+        }
+      }
+      return null;
+    },
+    
+    /**
+     * Check if a scene in a collection is the currently active scene
+     */
+    isActiveSceneInCollection(sceneId) {
+      if (!this.activeSceneData) return false;
+      // Find the scene in the collection schema
+      for (const collection of this.sceneCollectionsSchema) {
+        const scene = collection.scenes?.find(s => s.id === sceneId);
+        if (scene) {
+          // Match by name since IDs might differ between schema and active
+          return scene.name === this.activeSceneData.name;
+        }
+      }
+      return false;
+    },
+    
     async logSourcesAndSettings(collectionId, sceneId) {
       // Get all sources
       this.streamlabsOBS.v1.Sources.getSources().then(sources => {
@@ -1514,6 +2201,94 @@ export default {
         seenNames.add(sourceName);
         return true;
       });
+    },
+    
+    /**
+     * Get scene items with folder support for collection modal
+     * Handles nested folder structure similar to active scene sources
+     */
+    getSelectedSceneItemsWithFolders(collection) {
+      const sceneId = this.selectedScenes[collection.id];
+      if (!sceneId) return [];
+      const scene = collection.scenes?.find(s => s.id === sceneId);
+      const items = scene?.sceneItems || [];
+      
+      if (!items.length) return [];
+      
+      // Build a set of all childrenIds (items that are children of folders)
+      const childrenIdsSet = new Set();
+      items.forEach(item => {
+        if (item.childrenIds && Array.isArray(item.childrenIds)) {
+          item.childrenIds.forEach(id => childrenIdsSet.add(id));
+        }
+      });
+      
+      const result = [];
+      const seenNames = new Set();
+      
+      // Helper function to build folder children recursively
+      const buildFolderChildren = (childrenIds, depth = 1) => {
+        const children = [];
+        if (!childrenIds || !Array.isArray(childrenIds)) return children;
+        
+        childrenIds.forEach(childId => {
+          const childItem = items.find(i => i.id === childId);
+          if (!childItem) return;
+          
+          // Check if it's a folder (has childrenIds or type is folder)
+          if (childItem.childrenIds || childItem.type === 'folder') {
+            children.push({
+              ...childItem,
+              isFolder: true,
+              name: childItem.name || 'Folder',
+              nodeId: childItem.id,
+              depth,
+              children: buildFolderChildren(childItem.childrenIds, depth + 1)
+            });
+          } else if (childItem.sourceId) {
+            const sourceName = this.getSourceName(childItem.sourceId, collection.sources);
+            if (!seenNames.has(sourceName)) {
+              seenNames.add(sourceName);
+              children.push({
+                ...childItem,
+                nodeId: childItem.id,
+                depth
+              });
+            }
+          }
+        });
+        return children;
+      };
+      
+      // Process top-level items (not children of any folder)
+      items.forEach(item => {
+        // Skip items that are children of a folder
+        if (childrenIdsSet.has(item.id)) return;
+        
+        // Check if it's a folder
+        if (item.childrenIds || item.type === 'folder') {
+          result.push({
+            ...item,
+            isFolder: true,
+            name: item.name || 'Folder',
+            nodeId: item.id,
+            depth: 0,
+            children: buildFolderChildren(item.childrenIds, 1)
+          });
+        } else if (item.sourceId) {
+          const sourceName = this.getSourceName(item.sourceId, collection.sources);
+          if (!seenNames.has(sourceName)) {
+            seenNames.add(sourceName);
+            result.push({
+              ...item,
+              nodeId: item.id,
+              depth: 0
+            });
+          }
+        }
+      });
+      
+      return result;
     },
     
     // Source helper methods
@@ -1637,6 +2412,32 @@ export default {
             this.transitionTime = transitionValue;
             //console.log('SettingsView: Set transitionTime to:', this.transitionTime);
           }
+          
+          // Load watermark preferences
+          if (userPreferences.watermarkEnabled !== undefined) {
+            this.watermarkEnabled = userPreferences.watermarkEnabled;
+          }
+          if (userPreferences.watermarkImage !== undefined) {
+            this.watermarkImage = userPreferences.watermarkImage;
+          }
+          if (userPreferences.watermarkLayout !== undefined) {
+            this.watermarkLayout = userPreferences.watermarkLayout;
+          }
+          if (userPreferences.watermarkSize !== undefined) {
+            this.watermarkSize = userPreferences.watermarkSize;
+          }
+          if (userPreferences.watermarkTitle !== undefined) {
+            this.watermarkTitle = userPreferences.watermarkTitle;
+          }
+          if (userPreferences.watermarkPosition !== undefined) {
+            this.watermarkPosition = userPreferences.watermarkPosition;
+          }
+          if (userPreferences.watermarkDuration !== undefined) {
+            this.watermarkDuration = userPreferences.watermarkDuration;
+          }
+          if (userPreferences.targetBehavior !== undefined) {
+            this.targetBehavior = userPreferences.targetBehavior;
+          }
         }
       } catch (err) {
         console.log('SettingsView: No saved preferences found or error loading:', err);
@@ -1734,6 +2535,25 @@ export default {
             // Only update lastReplayBufferFileId when not exporting (i.e., from stopSceneCycling)
             if (!this.isExportingSave) {
               this.lastReplayBufferFileId = file.id;
+              // Show success notification
+              this.streamlabsOBS.v1.Notifications.push({
+                message: `✅ Recording ${replayFile.name} saved!`,
+                type: 'SUCCESS',
+                unread: true,
+                playSound: false,
+                lifeTime: 2500,
+                showTime: true
+              });
+            }
+            if( this.isExportingSave) {
+              this.streamlabsOBS.v1.Notifications.push({
+                message: `✅ Export ${replayFile.name} saved!`,
+                type: 'SUCCESS',
+                unread: true,
+                playSound: false,
+                lifeTime: 2500,
+                showTime: true
+              });
             }
             
             // Resolve the save promise when file is saved
@@ -1786,11 +2606,31 @@ export default {
           // Load scene collections schema
           await this.loadSceneCollectionsSchema();
           
+          // Get active collection ID and load stored source targets
+          this.activeCollectionId = this.getActiveCollectionId();
+          if (this.activeCollectionId) {
+            await this.loadSourceTargetsForCollection(this.activeCollectionId);
+          }
+          
           // Listen for navigation events
           if (this.streamlabsOBS.v1.App && this.streamlabsOBS.v1.App.onNavigation) {
             this.streamlabsOBS.v1.App.onNavigation(async (nav) => {
               //console.log('SettingsView: Navigation event received', nav);
-              this.reloadActiveCollection();
+              
+              // Store previous collection ID before reloading
+              const previousCollectionId = this.activeCollectionId;
+              
+              await this.reloadActiveCollection();
+              
+              // Get the new active collection ID
+              const newCollectionId = this.getActiveCollectionId();
+              
+              // If collection changed, load stored source targets for the new collection
+              if (newCollectionId && newCollectionId !== previousCollectionId) {
+                console.log('Collection changed from', previousCollectionId, 'to', newCollectionId);
+                await this.loadSourceTargetsForCollection(newCollectionId);
+                this.activeCollectionId = newCollectionId;
+              }
 
               this.streamlabsOBS.v1.Sources.getAppSources().then(sources => {
                 if (!sources || sources.length === 0) return;
@@ -1946,6 +2786,67 @@ export default {
       console.log('SettingsView: Selected modal scene:', scene.name);
     },
 
+    // Watermark methods
+    async saveWatermarkPreferences() {
+      try {
+        const currentPrefs = await this.streamlabs.userSettings.get('userPreferences') || {};
+        await this.streamlabs.userSettings.set('userPreferences', {
+          ...currentPrefs,
+          watermarkEnabled: this.watermarkEnabled,
+          watermarkImage: this.watermarkImage,
+          watermarkLayout: this.watermarkLayout,
+          watermarkSize: this.watermarkSize,
+          watermarkTitle: this.watermarkTitle,
+          watermarkPosition: this.watermarkPosition,
+          watermarkDuration: this.watermarkDuration,
+          targetBehavior: this.targetBehavior
+        });
+        console.log('SettingsView: Saved watermark preferences');
+      } catch (err) {
+        console.error('SettingsView: Error saving watermark preferences:', err);
+      }
+    },
+
+    openWatermarkFilePicker() {
+      this.$refs.watermarkFileInput?.click();
+    },
+
+    async handleWatermarkFileSelect(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      // Validate file type
+      const validTypes = ['image/png', 'image/jpeg', 'image/gif', 'video/mp4', 'video/webm'];
+      if (!validTypes.includes(file.type)) {
+        console.error('Invalid file type:', file.type);
+        return;
+      }
+
+      // Convert to base64 data URL for storage
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        this.watermarkImage = e.target.result;
+        await this.saveWatermarkPreferences();
+        console.log('SettingsView: Watermark image updated');
+      };
+      reader.readAsDataURL(file);
+
+      // Clear the input so the same file can be selected again
+      event.target.value = '';
+    },
+
+    async resetWatermarkImage() {
+      this.watermarkImage = '';
+      await this.saveWatermarkPreferences();
+      console.log('SettingsView: Watermark reset to default');
+    },
+
+    async previewFromModal() {
+      this.showExportModal = false;
+      await this.saveWatermarkPreferences();
+      this.displayPreviewOnPlane();
+    },
+
     async exportReplayToScene() {
       if (!this.lastReplayBufferFileId || !this.activeScenes.length || !this.existingSource) {
         console.error('No replay file or scenes available');
@@ -2023,6 +2924,13 @@ export default {
         const videoAspect = video.videoWidth / video.videoHeight;
         const planeWidth = planeHeight * videoAspect;
         
+        // Calculate centerZ using the same approach as fitToRect
+        // This gives us the camera distance needed to fit the plane in view
+        let centerZ = 2.25; // fallback default
+        if (this._threeControls) {
+          centerZ = this._threeControls.getDistanceToFitBox(planeWidth, planeHeight, 0);
+        }
+        
         const cameraTimeline = buildCameraTimeline({
           scenes: this.scenesToCycle,
           activeScenes: this.activeScenes,
@@ -2034,7 +2942,10 @@ export default {
           canvasWidth: this.canvasBaseWidth,
           canvasHeight: this.canvasBaseHeight,
           planeWidth,
-          planeHeight
+          planeHeight,
+          centerZ,
+          targetBehavior: this.targetBehavior,
+          customSourceTargets: this.customSourceTargets
         });
 
         // Send video data in chunks to show progress for large files
@@ -2050,7 +2961,15 @@ export default {
           totalSize: base64.length,
           mimeType: replayFile.type || 'video/mp4',
           fileName: replayFile.name,
-          cameraTimeline: cameraTimeline
+          cameraTimeline: cameraTimeline,
+          // Watermark settings
+          watermarkEnabled: this.watermarkEnabled,
+          watermarkImage: this.watermarkImageSrc,
+          watermarkLayout: this.watermarkLayout,
+          watermarkSize: this.watermarkSize,
+          watermarkTitle: this.watermarkTitle,
+          watermarkPosition: this.watermarkPosition,
+          watermarkDuration: this.watermarkDuration
         });
         
         // Send chunks with progress updates
@@ -2107,7 +3026,7 @@ export default {
           
           // Poll until buffer is actually stopped
           let attempts = 0;
-          const maxAttempts = 20; // 10 seconds max
+          const maxAttempts = 30; // 15 seconds max
           while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 500));
             state = await this.streamlabsOBS.v1.Replay.getState();
@@ -2118,11 +3037,29 @@ export default {
             }
             attempts++;
           }
+          
+          if (attempts >= maxAttempts) {
+            console.warn('Timeout waiting for replay buffer to stop');
+            // Force stop by disabling and re-enabling
+            console.log('Attempting force stop by toggling replay buffer...');
+            await this.streamlabsOBS.v1.Replay.setEnabled(false);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await this.streamlabsOBS.v1.Replay.setEnabled(true);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            state = await this.streamlabsOBS.v1.Replay.getState();
+            console.log('Buffer state after force toggle:', state.status);
+          }
         }
         
-        // Set the replay buffer duration to match video duration
-        await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
-        console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+        // Only set duration if buffer is actually stopped
+        state = await this.streamlabsOBS.v1.Replay.getState();
+        if (state.status === 'offline' || state.status === 'stopped') {
+          // Set the replay buffer duration to match video duration
+          await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
+          console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+        } else {
+          console.warn('Cannot set duration, buffer still in state:', state.status);
+        }
         
         // Navigate to Editor BEFORE starting buffer so browser source is visible/rendering
         // This ensures the camera animation is captured in the recording
@@ -2318,22 +3255,21 @@ export default {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       
       // Calculate total duration upfront (needed for replay buffer)
-      // Total = bufferStartDelay + (scenes × sceneDuration) + ((scenes - 1) × transitionTime)
-      // No transition before first scene or after last scene
-      // Buffer needs extra time to ensure it captures everything
+      // Base duration: bufferStartDelay + (scenes × sceneDuration)
+      // Zoom animations are designed to fit within the base sceneDuration
       const bufferStartDelay = 50; // ms - time we wait after starting buffer before cycling
-      const sceneDurationMs = (sceneCount * this.sceneDuration) + (Math.max(0, sceneCount - 1) * this.transitionTime);
-      const totalDurationMs = bufferStartDelay + sceneDurationMs;
+      const totalDurationMs = bufferStartDelay + (sceneCount * this.sceneDuration);
+      
       const totalSeconds = Math.ceil(totalDurationMs / 1000); // Use ceil to ensure buffer is long enough
       const mins = Math.floor(totalSeconds / 60);
       const secs = totalSeconds % 60;
       const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
       
-      console.log(`Duration calculation: ${bufferStartDelay}ms buffer delay + ${sceneCount} scenes × ${this.sceneDuration}ms + ${sceneCount - 1} transitions × ${this.transitionTime}ms = ${totalDurationMs}ms (${totalSeconds}s buffer)`);
+      console.log(`Duration calculation: ${bufferStartDelay}ms buffer delay + ${sceneCount} scenes × ${this.sceneDuration}ms = ${totalDurationMs}ms (${totalSeconds}s buffer)`);
 
       // add app source to scene if not already in it
       if(!this.existingSource) {
-        const source = await this.streamlabsOBS.v1.Sources.createAppSource(`Scene Visualizer Replay Buffer`, 'scene-collection-visualizer');
+        const source = await this.streamlabsOBS.v1.Sources.createAppSource(`🎥 Replay Buffer`, 'scene-collection-visualizer');
         this.existingSource = source.id;
 
         // Add source to first scene
@@ -2369,7 +3305,7 @@ export default {
           
           // Poll until buffer is actually stopped (not just 'stopping')
           let attempts = 0;
-          const maxAttempts = 20; // 10 seconds max
+          const maxAttempts = 30; // 15 seconds max
           while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 500));
             state = await this.streamlabsOBS.v1.Replay.getState();
@@ -2383,12 +3319,26 @@ export default {
           
           if (attempts >= maxAttempts) {
             console.warn('Timeout waiting for replay buffer to stop');
+            // Force stop by disabling and re-enabling
+            console.log('Attempting force stop by toggling replay buffer...');
+            await this.streamlabsOBS.v1.Replay.setEnabled(false);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await this.streamlabsOBS.v1.Replay.setEnabled(true);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            state = await this.streamlabsOBS.v1.Replay.getState();
+            console.log('Buffer state after force toggle:', state.status);
           }
         }
         
-        // Set the replay buffer duration to match total playback time
-        await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
-        console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+        // Only set duration if buffer is actually stopped
+        state = await this.streamlabsOBS.v1.Replay.getState();
+        if (state.status === 'offline' || state.status === 'stopped') {
+          // Set the replay buffer duration to match total playback time
+          await this.streamlabsOBS.v1.Replay.setDuration(totalSeconds);
+          console.log('Replay buffer duration set to:', totalSeconds, 'seconds');
+        } else {
+          console.warn('Cannot set duration, buffer still in state:', state.status);
+        }
         
         // Switch to first scene BEFORE starting the buffer
         // This ensures the initial transition is not recorded
@@ -2423,31 +3373,64 @@ export default {
       this.playbackProgress = 0;
       this.playbackStartTime = performance.now();
       
+      // Set record status for first scene
+      const firstScene = this.scenesToCycle[0];
+      if (firstScene) {
+        this.recordStatus = `Scene: ${firstScene.name} (1/${this.scenesToCycle.length})`;
+      }
+      
       // Disable user camera controls during recording
       if (this._threeControls) {
         this._threeControls.enabled = false;
       }
       
+      // Build camera timeline for progress bar visualization
+      // (even during recording, we want to show animation markers)
+      const planeHeight = 2;
+      const planeAspect = this.canvasBaseWidth / this.canvasBaseHeight;
+      const planeWidth = planeHeight * planeAspect;
+      let centerZ = 2.25;
+      if (this._threeControls) {
+        centerZ = this._threeControls.getDistanceToFitBox(planeWidth, planeHeight, 0);
+      }
+      
+      this.previewCameraTimeline = buildCameraTimeline({
+        scenes: this.scenesToCycle,
+        activeScenes: this.activeScenes,
+        activeSources: this.activeSources,
+        displayMode: this.displayMode,
+        sceneDuration: this.sceneDuration,
+        transitionTime: this.transitionTime,
+        bufferStartDelay,
+        canvasWidth: this.canvasBaseWidth,
+        canvasHeight: this.canvasBaseHeight,
+        planeWidth,
+        planeHeight,
+        centerZ,
+        targetBehavior: this.targetBehavior,
+        customSourceTargets: this.customSourceTargets
+      });
+      
       // Start smooth progress animation
       this.animatePlaybackProgress(totalDurationMs);
       
-      // First scene plays for sceneDuration, then we cycle
-      // Subsequent scenes play for sceneDuration + transitionTime (to include the transition animation)
-      const firstSceneTimeout = this.sceneDuration;
-      const subsequentInterval = this.sceneDuration + this.transitionTime;
+      // Use fixed scene duration - zoom animations are designed to fit within this time
+      console.log(`Each scene will play for ${this.sceneDuration}ms`);
       
-      console.log(`First scene will play for ${firstSceneTimeout}ms, subsequent scenes for ${subsequentInterval}ms`);
       this.sceneCycleTimeout = setTimeout(() => {
-        // After first scene's duration, cycle to next and start interval
+        // After first scene's duration, cycle to next
         this.cycleToNextScene();
         
-        // Only start interval if there are more scenes to cycle
-        if (this.isRecordingScenes && this.currentSceneIndex < this.scenesToCycle.length) {
-          this.sceneCycleInterval = setInterval(() => {
-            this.cycleToNextScene();
-          }, subsequentInterval);
-        }
-      }, firstSceneTimeout);
+        // Use setInterval for consistent scene durations
+        this.sceneCycleInterval = setInterval(() => {
+          if (!this.isRecordingScenes || this.currentSceneIndex >= this.scenesToCycle.length) {
+            clearInterval(this.sceneCycleInterval);
+            this.sceneCycleInterval = null;
+            return;
+          }
+          this.cycleToNextScene();
+        }, this.sceneDuration);
+      }, this.sceneDuration);
     },
 
     async stopSceneCycling(isManual = false) {
@@ -2464,7 +3447,10 @@ export default {
         this._recordingDebugStartTime = null;
       }
       
-      this.streamlabsOBS.v1.Replay.save();
+      // Only save the replay if recording completed successfully (not manually interrupted)
+      if (wasRecording && !isManual) {
+        this.streamlabsOBS.v1.Replay.save();
+      }
       this.isRecordingScenes = false;
       
       // Re-enable user camera controls
@@ -2472,12 +3458,11 @@ export default {
         this._threeControls.enabled = true;
       }
       
-      // Clear timeout for first scene
+      // Clear scene cycling timeout and interval
       if (this.sceneCycleTimeout) {
         clearTimeout(this.sceneCycleTimeout);
         this.sceneCycleTimeout = null;
       }
-      
       if (this.sceneCycleInterval) {
         clearInterval(this.sceneCycleInterval);
         this.sceneCycleInterval = null;
@@ -2488,10 +3473,20 @@ export default {
         cancelAnimationFrame(this.playbackAnimationId);
         this.playbackAnimationId = null;
       }
-      this.playbackProgress = 0;
       this.playbackStartTime = null;
-      this.playbackElapsed = 0;
-      this.playbackTotalDuration = 0;
+      
+      // Only clear timeline data if manually interrupted
+      // Keep it after successful recording so UI shows timeline/duration
+      if (isManual) {
+        this.playbackProgress = 0;
+        this.playbackElapsed = 0;
+        this.playbackTotalDuration = 0;
+        this.previewCameraTimeline = null;
+      } else {
+        // Recording completed successfully - show full progress
+        this.playbackProgress = 100;
+        this.playbackElapsed = this.playbackTotalDuration;
+      }
       
       // Show warning if manually interrupted while recording
       if (isManual && wasRecording) {
@@ -2578,6 +3573,7 @@ export default {
         
         // Start playing
         this.isPreviewPlaying = true;
+        this.previewWasCancelled = false; // Reset cancelled flag
         this.playbackProgress = 0;
         this.playbackElapsed = 0;
         // Set total duration from video (metadata already loaded at this point)
@@ -2637,7 +3633,7 @@ export default {
     
     /**
      * Schedule camera animations to match scene timing during video preview playback
-     * Each scene gets its own animation triggered at the right time in the video
+     * Uses the camera timeline system with targetBehavior support (zoom/cut)
      */
     schedulePreviewCameraAnimations(video, bufferStartDelay, planeWidth, planeHeight) {
       // Clear any existing scheduled animations
@@ -2647,48 +3643,54 @@ export default {
       this._previewAnimationTimeouts = [];
       
       const sceneCount = this.scenesToCycle.length;
-      console.log(`Scheduling ${sceneCount} camera animations for preview playback`);
+      console.log(`Scheduling ${sceneCount} camera animations for preview playback (behavior: ${this.targetBehavior})`);
       
-      // Calculate when each scene starts in the video
-      // Video structure: bufferStartDelay + (scene1 + transition + scene2 + transition + ... + sceneN)
-      let currentTimeMs = bufferStartDelay;
+      // Calculate centerZ using the same approach as export
+      let centerZ = 2.25; // fallback default
+      if (this._threeControls) {
+        centerZ = this._threeControls.getDistanceToFitBox(planeWidth, planeHeight, 0);
+      }
       
-      this.scenesToCycle.forEach((scene, index) => {
-        const sceneStartTime = currentTimeMs;
+      // Build camera timeline with targetBehavior and customSourceTargets
+      const cameraTimeline = buildCameraTimeline({
+        scenes: this.scenesToCycle,
+        activeScenes: this.activeScenes,
+        activeSources: this.activeSources,
+        displayMode: this.displayMode,
+        sceneDuration: this.sceneDuration,
+        transitionTime: this.transitionTime,
+        bufferStartDelay,
+        canvasWidth: this.canvasBaseWidth,
+        canvasHeight: this.canvasBaseHeight,
+        planeWidth,
+        planeHeight,
+        centerZ,
+        targetBehavior: this.targetBehavior,
+        customSourceTargets: this.customSourceTargets
+      });
+      
+      // Store timeline for progress bar visualization
+      this.previewCameraTimeline = cameraTimeline;
+      
+      // Schedule each scene's animations using the timeline
+      cameraTimeline.scenes.forEach((sceneTimeline) => {
+        const { name, startTimeMs } = sceneTimeline;
         
-        // Get scene nodes for this scene
-        const sceneData = this.activeScenes.find(s => s.id === scene.id);
-        const nodes = sceneData?.nodes?.filter(n => n.display === this.displayMode && n.type !== 'folder') || [];
-        
-        console.log(`  Scene ${index + 1} "${scene.name}" starts at ${sceneStartTime}ms`);
+        console.log(`  Scene "${name}" starts at ${startTimeMs}ms with ${sceneTimeline.animations.length} animations`);
         
         // Schedule animation to trigger when video reaches this scene's start time
         const timeout = setTimeout(() => {
-          // Only trigger if video is still playing and at approximately the right time
+          // Only trigger if video is still playing
           if (!this.isPreviewPlaying || !video || video.paused) return;
           
           const videoTimeMs = video.currentTime * 1000;
-          console.log(`Triggering camera animation for scene "${scene.name}" at video time ${videoTimeMs}ms`);
+          console.log(`Executing timeline for scene "${name}" at video time ${videoTimeMs}ms`);
           
-          performSceneCameraAnimation(
-            this._threeControls,
-            nodes,
-            this.activeSources,
-            this.canvasBaseWidth,
-            this.canvasBaseHeight,
-            planeWidth,
-            planeHeight,
-            this.sceneDuration
-          );
-        }, sceneStartTime);
+          // Execute the pre-computed animation sequence
+          executeSceneTimeline(this._threeControls, sceneTimeline);
+        }, startTimeMs);
         
         this._previewAnimationTimeouts.push(timeout);
-        
-        // Move to next scene (add scene duration + transition time, except no transition after last scene)
-        currentTimeMs += this.sceneDuration;
-        if (index < sceneCount - 1) {
-          currentTimeMs += this.transitionTime;
-        }
       });
     },
     
@@ -2700,6 +3702,9 @@ export default {
         this._previewAnimationTimeouts.forEach(t => clearTimeout(t));
         this._previewAnimationTimeouts = [];
       }
+      
+      // Clear the preview camera timeline (used for progress bar visualization)
+      //this.previewCameraTimeline = null;
       
       // Cancel all running camera animations immediately
       cancelAllAnimations();
@@ -2756,6 +3761,7 @@ export default {
       if (!this.isPreviewPlaying) return;
       
       this.isPreviewPlaying = false;
+      this.previewWasCancelled = true; // Mark as cancelled so timecode shows 00:00
       this.playbackProgress = 0;
       this.playbackElapsed = 0;
       this.playbackTotalDuration = 0;
@@ -2788,6 +3794,60 @@ export default {
       const secs = totalSeconds % 60;
       return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     },
+    
+    getAnimationMarkerPosition(sceneTimeline, animation, type) {
+      // Calculate the position of an animation start/end as percentage of total playback duration
+      if (!this.previewCameraTimeline || !this.playbackTotalDuration) return 0;
+      
+      // Buffer delay that's "before" the progress bar - subtract to normalize positions
+      const bufferStartDelay = 50; // ms - must match recording buffer delay
+      
+      const sceneStartMs = sceneTimeline.startTimeMs;
+      
+      // Find the animation's offset within the scene by summing prior animation durations
+      let animationOffsetMs = 0;
+      for (const anim of sceneTimeline.animations) {
+        if (anim === animation) break;
+        animationOffsetMs += anim.durationMs || 0;
+      }
+      
+      const animStartMs = sceneStartMs + animationOffsetMs;
+      const animEndMs = animStartMs + (animation.durationMs || 0);
+      
+      // Subtract buffer delay to normalize (first animation starts at 0%)
+      const targetMs = type === 'start' ? animStartMs : animEndMs;
+      const normalizedMs = Math.max(0, targetMs - bufferStartDelay);
+      const normalizedTotal = this.playbackTotalDuration - bufferStartDelay;
+      
+      return (normalizedMs / normalizedTotal) * 100;
+    },
+
+    getEasingCurvePath(easingName) {
+      // Generate SVG path for the easing curve
+      // The viewBox is 0 0 100 100, y is inverted (0 at top, 100 at bottom)
+      // We want to draw from bottom-left to top-right following the easing curve
+      
+      // Define easing functions
+      const easingFunctions = {
+        'power3.out': t => 1 - Math.pow(1 - t, 3),
+        'power2.inOut': t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2,
+        'linear': t => t
+      };
+      
+      const easing = easingFunctions[easingName] || easingFunctions['linear'];
+      
+      // Generate path points
+      const points = [];
+      const steps = 20;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = t * 100;
+        const y = 100 - (easing(t) * 100); // Invert Y for SVG coordinate system
+        points.push(`${x},${y}`);
+      }
+      
+      return `M ${points[0]} L ${points.slice(1).join(' L ')}`;
+    },
 
     async activateCurrentScene() {
       const scene = this.scenesToCycle[this.currentSceneIndex];
@@ -2816,16 +3876,6 @@ export default {
         // We've completed all scenes, stop cycling (not manual)
         this.stopSceneCycling(false);
         console.log('Scene cycling complete - all scenes played');
-        
-        // Show success notification
-        this.streamlabsOBS.v1.Notifications.push({
-          message: `✅ Scenes finished recording successfully!`,
-          type: 'SUCCESS',
-          unread: true,
-          playSound: false,
-          lifeTime: 2500,
-          showTime: true
-        });
         return;
       }
       
@@ -3028,6 +4078,22 @@ export default {
   background: var(--button-hover);
 }
 
+.collection.is-active-collection .collection-header {
+  border-left: 3px solid var(--teal);
+}
+
+.active-collection-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--teal);
+  background: var(--teal-semi);
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .collection-name {
   font-weight: 600;
   font-size: 1.1rem;
@@ -3099,12 +4165,41 @@ export default {
   background: var(--list-selected);
 }
 
+.scene-list-item.is-active {
+  color: var(--teal);
+  
+  .item-name {
+    font-weight: 600;
+  }
+}
+
+.active-scene-icon {
+  margin-left: auto;
+  color: var(--teal);
+  font-size: 0.75rem;
+}
+
 .source-list-item {
   cursor: default;
 }
 
 .source-list-item:hover {
   background: var(--list-selected);
+}
+
+.source-list-item.folder-item {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.source-list-item.folder-item .item-icon {
+  color: var(--warning);
+}
+
+.folder-count {
+  font-size: 0.75rem;
+  color: var(--midtone);
+  margin-left: 0.25rem;
 }
 
 .item-count {
@@ -3127,7 +4222,6 @@ export default {
 .toggle-icon {
   font-size: 0.7rem;
   color: var(--midtone);
-  margin-left: auto;
   transition: transform 0.2s ease;
 }
 
@@ -3191,6 +4285,7 @@ export default {
 
 .item-name {
   font-size: 0.9rem;
+  flex-grow: 1;
 }
 
 .item-type {
@@ -3469,10 +4564,44 @@ export default {
   animation: spin 0.8s linear infinite;
 }
 
-.active-indicator {
-  color: var(--teal);
-  font-size: 0.6rem;
+.active-scene-radio {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--dark-background);
+  cursor: pointer;
   margin-left: auto;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.active-scene-radio:checked {
+  border-color: var(--teal);
+  background: var(--teal);
+  box-shadow: inset 0 0 0 3px var(--main-bg);
+}
+
+.active-scene-radio:hover:not(:disabled) {
+  border-color: var(--teal);
+}
+
+.active-scene-radio:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.source-target-icon {
+  color: var(--teal);
+  font-size: 0.65rem;
+  margin-left: auto;
+  opacity: 0.8;
+}
+
+.source-target-icon.folder-target {
+  opacity: 0.5;
 }
 
 .scene-list-item.is-active {
@@ -3533,6 +4662,54 @@ export default {
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+}
+
+.source-header .source-target-icon {
+  color: var(--teal);
+  font-size: 0.7rem;
+}
+
+.source-header .toggle-icon {
+  margin-left: auto;
+}
+
+/* Set Target button - hidden by default, shown on hover */
+.set-target-btn {
+  display: none;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--midtone);
+  font-size: 0.7rem;
+  opacity: 0.6;
+  transition: color 0.15s ease, opacity 0.15s ease;
+  margin-left: auto;
+}
+
+.set-target-btn:hover {
+  color: var(--teal);
+  opacity: 1;
+}
+
+.set-target-btn.is-target {
+  color: var(--teal);
+  opacity: 1;
+}
+
+/* Show set-target-btn on source-list-item hover */
+.source-list-item:hover .set-target-btn {
+  display: flex;
+}
+
+/* Hide the existing target icon when button is shown */
+.source-list-item:hover .source-target-icon:not(.folder-target) {
+  display: none;
+}
+
+/* When button is visible, it takes the place of auto margin */
+.source-list-item:hover .toggle-icon {
+  margin-left: 0;
 }
 
 .source-settings {
@@ -3778,7 +4955,6 @@ export default {
 /* Playback Controls Section */
 .playback-controls-section {
     background: var(--section);
-    overflow: hidden;
     flex: 1;
     flex-direction: row;
 }
@@ -3936,7 +5112,6 @@ export default {
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 0.5rem 0.75rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -3971,7 +5146,7 @@ export default {
 
 .playback-progress-bar {
   position: relative;
-  height: 12px;
+  height: 36px;
   background: var(--border);
   overflow: visible;
   min-width: 50px;
@@ -3987,6 +5162,76 @@ export default {
   font-size: 12px;
   line-height: 1;
   opacity: 0.7;
+}
+
+/* Animation markers for cut/zoom visualization */
+.animation-marker {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.animation-marker.cut-mode {
+  background: rgba(226, 116, 116, 0.8);
+}
+
+.animation-marker.zoom-mode {
+  background: rgba(128, 245, 210, 0.6);
+}
+
+.animation-marker-start {
+  border-radius: 1px 0 0 1px;
+}
+
+.animation-marker-end {
+  border-radius: 0 1px 1px 0;
+}
+
+.animation-marker-end.cut-mode {
+  opacity: 0;
+}
+
+.animation-connector {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.animation-connector.zoom-mode {
+  background: linear-gradient(90deg, rgba(128, 245, 210, 0.15), rgba(128, 245, 210, 0.3));
+}
+
+.animation-connector.cut-mode {
+  background: linear-gradient(90deg, rgba(226, 116, 116, 0.4), rgba(226, 116, 116, 0));
+}
+
+.easing-curve {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.easing-curve-path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.easing-curve-path.zoom-mode {
+  stroke: rgba(128, 245, 210, 0.8);
+}
+
+.easing-curve-path.cut-mode {
+  stroke: rgba(226, 116, 116, 0.7);
 }
 
 .playback-progress-fill {
@@ -4118,8 +5363,12 @@ export default {
   display: flex;
   flex-direction: row;
   align-items: center;
-  justify-content: space-between;
+  justify-content: start;
   gap: 1rem;
+}
+
+.setting-row > * {
+  flex: 1;
 }
 
 .setting-label {
@@ -4127,23 +5376,23 @@ export default {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--title);
+  font-weight: 300;
+  padding: .5rem .75rem;
 }
 
 .setting-label span {
-  color: var(--accent);
+
 }
 
 .setting-input {
-  width: 100px;
-  padding: 0.75rem;
+  flex: 1;
+  padding: .5rem .75rem;
   background: var(--dark-background);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--title);
   font-size: 0.95rem;
-  text-align: center;
+  text-align: left;
   transition: border-color 0.2s ease;
 }
 
@@ -4213,6 +5462,370 @@ export default {
 
 .cancel-btn:hover {
   color: var(--title);
+}
+
+/* Watermark Overlay Styles */
+.watermark-overlay {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  padding: 16px;
+}
+
+.watermark-overlay.watermark-top-left {
+  top: 0;
+  left: 0;
+}
+
+.watermark-overlay.watermark-top-center {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.watermark-overlay.watermark-top-right {
+  top: 0;
+  right: 0;
+}
+
+.watermark-overlay.watermark-bottom-left {
+  bottom: 0;
+  left: 0;
+}
+
+.watermark-overlay.watermark-bottom-center {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.watermark-overlay.watermark-bottom-right {
+  bottom: 0;
+  right: 0;
+}
+
+.watermark-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 12px 16px;
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+}
+
+/* Stacked layout (default): image above text */
+.watermark-content.watermark-layout-stacked {
+  flex-direction: column;
+}
+
+/* Inline layout: image beside text */
+.watermark-content.watermark-layout-inline {
+  flex-direction: row;
+}
+
+.watermark-content.watermark-layout-inline .watermark-title {
+  text-align: left;
+}
+
+.watermark-image,
+.watermark-video {
+  max-width: 80px;
+  max-height: 80px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.watermark-title {
+  font-size: 0.75rem;
+  color: #ffffff;
+  text-align: center;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Export Modal Styles */
+.export-modal {
+  max-width: 500px;
+}
+
+.export-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.setting-checkbox-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+  font-weight: 300;
+  color: var(--paragraph);
+}
+
+.checkbox-label-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 300;
+}
+
+.setting-checkbox-label input[type="checkbox"] {
+  display: none;
+}
+
+.checkbox-custom {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: var(--section);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.setting-checkbox-label input[type="checkbox"]:checked + .checkbox-custom {
+  background: var(--teal);
+  border-color: var(--teal);
+}
+
+.setting-checkbox-label input[type="checkbox"]:checked + .checkbox-custom::after {
+  content: '✓';
+  color: var(--action-button-text);
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.setting-section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 0.5rem 0;
+  user-select: none;
+}
+
+.setting-section-toggle:hover {
+  color: var(--teal);
+}
+
+.section-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 300;
+}
+
+.toggle-chevron {
+  transition: transform 0.2s ease;
+  margin-left: auto;
+}
+
+.toggle-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.setting-label .source-target-icon {
+  margin-left: 0;
+}
+
+.watermark-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-left: 1.5rem;
+  border-left: 2px solid var(--border);
+  margin-left: 0.5rem;
+}
+
+.watermark-media-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.watermark-preview-btn {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: .5rem .75rem;
+  transition: all 0.2s ease;
+}
+
+.watermark-preview-btn:hover {
+  border-color: var(--teal);
+  background: rgba(128, 245, 210, 0.05);
+}
+
+.watermark-preview-btn:hover .preview-overlay {
+  opacity: 1;
+}
+
+.watermark-preview-btn img,
+.watermark-preview-btn video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.preview-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.preview-overlay span {
+  color: var(--teal);
+  font-size: 1.25rem;
+}
+
+.watermark-preview {
+  width: 60px;
+  height: 60px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.watermark-preview img,
+.watermark-preview video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.add-media-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--section);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--paragraph);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.add-media-btn:hover {
+  background: var(--background);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.reset-media-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--midtone);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.reset-media-btn:hover {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: white;
+}
+
+.setting-select {
+  padding: .5rem .75rem;
+  background: var(--section);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--paragraph);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.setting-select:hover {
+  border-color: var(--teal);
+}
+
+.setting-select:focus {
+  outline: none;
+  border-color: var(--teal);
+  box-shadow: 0 0 0 2px rgba(128, 245, 210, 0.2);
+}
+
+.slider-with-value {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.setting-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--dark-background,#2a2a2a);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.setting-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--teal);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.setting-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.setting-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--teal);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.slider-value {
+  min-width: 2.5rem;
+  text-align: right;
+  font-size: 0.875rem;
+  color: var(--paragraph);
 }
 
 

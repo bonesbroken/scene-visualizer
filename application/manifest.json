@@ -1,19 +1,20 @@
 {
-    "version": "1.0.0",
+    "version": "1.0.1",
     "name": "Scene Collection Visualizer",
     "buildPath": "dist/",
     "permissions": ["slobs.scenes-sources", "slobs.scene-transitions", "slobs.external-links", "slobs.streaming", "slobs.scene-collections", "slobs.obs-settings", "slobs.notifications"],
     "supportedPlatforms": ["twitch", "youtube", "facebook"],
-    "icon": "./assets/app-sq.png",
+    "icon": "./assets/img/app-sq.jpg",
     "sources": [
       {
         "type": "browser_source",
         "name": "Scene Collection Visualizer",
         "id": "scene-collection-visualizer",
         "about": {
-          "description": "Generate a video of your scene collection. Visualize transitions and animations between scenes based on your overlay setup.",
-          "bannerImage": "./assets/app-icon.png",
+          "description": "Generates a video of your scene collection. Do not add this source to your scene manually.",
+          "bannerImage": "./assets/img/app-icon.jpg",
           "bullets": [
+            "Select your scenes & set video duration"
           ]
         },
         "file": "sceneCollection.html",
@@ -29,7 +30,7 @@
         "slot": "top_nav",
         "file": "settings.html",
         "persistent": true,
-        "allowPopout": true,
+        "allowPopout": false,
         "popOutSize": {
           "width": 800,
           "height": 800

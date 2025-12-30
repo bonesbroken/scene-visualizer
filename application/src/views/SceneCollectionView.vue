@@ -1,6 +1,35 @@
 <template>
   <div class="scene-collection-container">
     <div ref="threeContainer" class="three-container"></div>
+    <!-- Watermark overlay -->
+    <div 
+      v-if="showWatermark" 
+      class="watermark-overlay"
+      :class="watermarkPositionClass"
+    >
+      <div 
+        class="watermark-content" 
+        :class="'watermark-layout-' + watermarkLayout"
+        :style="{ transform: 'scale(' + watermarkSize + ')', transformOrigin: watermarkTransformOrigin }"
+      >
+        <img 
+          v-if="isWatermarkImage" 
+          :src="watermarkImage" 
+          class="watermark-image" 
+          alt="Watermark"
+        />
+        <video 
+          v-else 
+          :src="watermarkImage" 
+          class="watermark-video" 
+          autoplay 
+          loop 
+          muted 
+          playsinline
+        ></video>
+        <span v-if="watermarkTitle" class="watermark-title">{{ watermarkTitle }}</span>
+      </div>
+    </div>
     <!-- 2px progress bar at bottom -->
     <div v-if="isPlaying" class="playback-progress-overlay">
       <div class="playback-progress-fill" :style="{ width: playbackProgress + '%' }"></div>
@@ -54,15 +83,60 @@ export default {
       isPlaying: false,
       videoDuration: 0,
       playbackProgress: 0,
+      
+      // Watermark settings
+      watermarkEnabled: false,
+      watermarkImage: '',
+      watermarkLayout: 'stacked',
+      watermarkSize: 1,
+      watermarkTitle: '',
+      watermarkPosition: 'top-left',
+      watermarkDuration: 'always',
+      showWatermark: false,
+      watermarkTimeout: null,
     };
   },
   computed: {
+    isWatermarkImage() {
+      const src = this.watermarkImage;
+      if (!src) return true;
+      
+      // Check for data URL first (uploaded files)
+      if (src.startsWith('data:')) {
+        // Extract mime type from data URL: data:image/png;base64,... or data:video/mp4;base64,...
+        const mimeMatch = src.match(/^data:([^;,]+)/);
+        if (mimeMatch) {
+          const mimeType = mimeMatch[1].toLowerCase();
+          return mimeType.startsWith('image/');
+        }
+        return true; // Default to image if can't parse
+      }
+      
+      // For regular file paths, check extension
+      const ext = src.split('.').pop().toLowerCase().split('?')[0];
+      return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+    },
+    watermarkPositionClass() {
+      return `watermark-${this.watermarkPosition}`;
+    },
+    watermarkTransformOrigin() {
+      const origins = {
+        'top-left': 'top left',
+        'top-center': 'top center',
+        'top-right': 'top right',
+        'bottom-left': 'bottom left',
+        'bottom-center': 'bottom center',
+        'bottom-right': 'bottom right'
+      };
+      return origins[this.watermarkPosition] || 'center';
+    }
   },
   mounted() {
     this.initStreamlabs();
   },
   beforeUnmount() {
     this.clearAnimationTimeouts();
+    this.hideWatermark();
     this.disposeThreeJS();
   },
   methods: {
@@ -121,6 +195,15 @@ export default {
             this.totalChunks = event.data.totalChunks;
             const sizeMB = ((event.data.totalSize * 0.75) / (1024 * 1024)).toFixed(1);
             //this.remoteLog('log', `Starting chunked receive: ${this.totalChunks} chunks, ${sizeMB}MB`);
+            
+            // Store watermark settings
+            this.watermarkEnabled = event.data.watermarkEnabled || false;
+            this.watermarkImage = event.data.watermarkImage || '';
+            this.watermarkLayout = event.data.watermarkLayout || 'stacked';
+            this.watermarkSize = event.data.watermarkSize || 1;
+            this.watermarkTitle = event.data.watermarkTitle || '';
+            this.watermarkPosition = event.data.watermarkPosition || 'top-left';
+            this.watermarkDuration = event.data.watermarkDuration || 'always';
           } else if (event.type === 'loadReplayChunk') {
             // Receive a chunk
             this.chunkBuffer[event.data.chunkIndex] = event.data.chunk;
@@ -215,6 +298,9 @@ export default {
         await video.play();
         //this.remoteLog('log', 'Video playing:', video.videoWidth, 'x', video.videoHeight);
         
+        // Show watermark if enabled
+        this.startWatermarkDisplay();
+        
         // Track playback progress
         video.ontimeupdate = () => {
           if (video.duration > 0) {
@@ -227,6 +313,8 @@ export default {
           //this.remoteLog('log', 'Playback ended!');
           this.isPlaying = false;
           this.playbackProgress = 0;
+          // Hide watermark
+          this.hideWatermark();
           // Clear any pending animation timeouts
           this.clearAnimationTimeouts();
           // Signal to SettingsView that playback has finished
@@ -545,6 +633,44 @@ export default {
     },
     
     /**
+     * Start displaying the watermark based on settings
+     */
+    startWatermarkDisplay() {
+      if (!this.watermarkEnabled) {
+        this.showWatermark = false;
+        return;
+      }
+      
+      this.showWatermark = true;
+      
+      // Clear any existing timeout
+      if (this.watermarkTimeout) {
+        clearTimeout(this.watermarkTimeout);
+        this.watermarkTimeout = null;
+      }
+      
+      // If duration is not 'always', set a timeout to hide it
+      if (this.watermarkDuration !== 'always') {
+        const durationMs = parseInt(this.watermarkDuration, 10) * 1000;
+        this.watermarkTimeout = setTimeout(() => {
+          this.showWatermark = false;
+          this.watermarkTimeout = null;
+        }, durationMs);
+      }
+    },
+    
+    /**
+     * Hide the watermark and clear any pending timeout
+     */
+    hideWatermark() {
+      this.showWatermark = false;
+      if (this.watermarkTimeout) {
+        clearTimeout(this.watermarkTimeout);
+        this.watermarkTimeout = null;
+      }
+    },
+    
+    /**
      * Schedule camera animations to match scene timing during video playback
      * Uses the scene timing data passed from SettingsView
      */
@@ -581,7 +707,7 @@ export default {
 
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap');
 * {
   margin: 0;
   padding: 0;
@@ -648,5 +774,88 @@ export default {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Watermark Overlay Styles */
+.watermark-overlay {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  padding: 16px;
+}
+
+.watermark-overlay.watermark-top-left {
+  top: 0;
+  left: 0;
+}
+
+.watermark-overlay.watermark-top-center {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.watermark-overlay.watermark-top-right {
+  top: 0;
+  right: 0;
+}
+
+.watermark-overlay.watermark-bottom-left {
+  bottom: 0;
+  left: 0;
+}
+
+.watermark-overlay.watermark-bottom-center {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.watermark-overlay.watermark-bottom-right {
+  bottom: 0;
+  right: 0;
+}
+
+.watermark-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 12px 16px;
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+}
+
+/* Stacked layout (default): image above text */
+.watermark-content.watermark-layout-stacked {
+  flex-direction: column;
+}
+
+/* Inline layout: image beside text */
+.watermark-content.watermark-layout-inline {
+  flex-direction: row;
+}
+
+.watermark-content.watermark-layout-inline .watermark-title {
+  text-align: left;
+}
+
+.watermark-image,
+.watermark-video {
+  max-width: 80px;
+  max-height: 80px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.watermark-title {
+  font-size: 0.75rem;
+  color: #ffffff;
+  text-align: center;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

@@ -5,7 +5,7 @@
 
 // Animation configuration constants
 export const CAMERA_INTRO = {
-  zOffset: 4,      // How far back camera starts from target
+  zOffset: 3,      // How far back camera starts from target
   duration: 3,     // Animation duration in seconds
   ease: 'power4.out'
 };
@@ -16,6 +16,77 @@ export const SCENE_TRANSITION = {
   webcamFocusDuration: 1.5, // Duration for webcam focus animation
   focusDelay: 0.5        // Delay between first and second animation (for gameplay scenes)
 };
+
+/**
+ * Calculate zoom mode animation durations based on scene duration and number of targets
+ * Ensures all animations fit within the scene duration with no overflow
+ * 
+ * @param {number} sceneDuration - Total scene duration in ms
+ * @param {number} numTargets - Number of source targets to focus on (default 1)
+ * @returns {Object} Duration values for each animation phase
+ */
+export function getZoomDurations(sceneDuration, numTargets = 1) {
+  // Ensure at least 1 target
+  numTargets = Math.max(1, numTargets);
+  
+  // Animation phase proportions (must sum to 1.0)
+  // firstAnim: 25%, then for each target: focusAnim + focusHold + return
+  // With 1 target: 25% first, 5% delay, 20% focus, 15% hold, 20% return, 15% buffer = 100%
+  // With N targets: need to scale down per-target portions
+  
+  // Base proportions for single target
+  const firstAnimProportion = 0.25;
+  const focusDelayProportion = 0.05;
+  
+  // Remaining time after first anim and delay
+  const remainingProportion = 1.0 - firstAnimProportion - focusDelayProportion;
+  
+  // Each target needs: focus + hold + return (with last return being final)
+  // Proportions per target: focus=0.20, hold=0.15, return=0.20 = 0.55 per target
+  // But last target doesn't need separate return, it's shared
+  // Actually: focus + hold for each, then one final return
+  // perTarget = focusAnim + focusHold, then one final returnAnim
+  
+  const focusAnimProportion = 0.20 / numTargets;
+  const focusHoldProportion = 0.15 / numTargets;
+  const returnAnimProportion = 0.20;
+  
+  // Scale to fit remaining proportion
+  const totalPerTargetNeeded = numTargets * (focusAnimProportion + focusHoldProportion) + returnAnimProportion;
+  const scale = remainingProportion / totalPerTargetNeeded;
+  
+  // Apply speed factor for very short/long scenes
+  const durationFactor = Math.min(1.2, Math.max(0.8, sceneDuration / 5000));
+  
+  return {
+    firstAnimDuration: Math.min(sceneDuration * firstAnimProportion * durationFactor, 2500),
+    focusDelay: Math.min(sceneDuration * focusDelayProportion * durationFactor, 500),
+    focusAnimDuration: Math.min(sceneDuration * focusAnimProportion * scale * durationFactor, 2000),
+    focusHoldTime: sceneDuration * focusHoldProportion * scale,
+    returnAnimDuration: Math.min(sceneDuration * returnAnimProportion * scale * durationFactor, 2000),
+    numTargets
+  };
+}
+
+/**
+ * Calculate the total duration for zoom mode animations for a scene
+ * Used by expectedRecordingDuration to add proper buffer time
+ * 
+ * @param {number} sceneDuration - Base scene duration in ms
+ * @param {number} numTargets - Number of source targets (0 if no targets)
+ * @returns {number} Total animation duration in ms (should equal sceneDuration for proper fit)
+ */
+export function getZoomTotalDuration(sceneDuration, numTargets) {
+  if (numTargets === 0) return sceneDuration;
+  
+  const durations = getZoomDurations(sceneDuration, numTargets);
+  // Total: firstAnim + focusDelay + (focusAnim + focusHold) * numTargets + returnAnim
+  const total = durations.firstAnimDuration + 
+                durations.focusDelay + 
+                (durations.focusAnimDuration + durations.focusHoldTime) * numTargets + 
+                durations.returnAnimDuration;
+  return total;
+}
 
 // Easing function types for timeline
 export const EASING = {
@@ -178,35 +249,29 @@ export function isGameplayScene(nodes, sources) {
 }
 
 /**
- * Find webcam-related sources in a scene
- * Looks for: image_source/ffmpeg_source with "webcam" or "frame" in name,
- * OR dshow_input/macos_avcapture (video capture devices)
+ * Find source targets in a scene (sources that camera should focus on)
+ * Includes: dshow_input, macos_avcapture (video capture devices/webcams), and custom targets
+ * @param {Array} nodes - Scene nodes
+ * @param {Array} sources - All sources
+ * @param {Object} customSourceTargets - Object mapping sourceId to true/false for custom targets
  */
-export function findWebcamSources(nodes, sources) {
+export function findSourceTargets(nodes, sources, customSourceTargets = {}) {
   return nodes.filter(node => {
     if (node.visible === false) return false;
     
     const source = sources.find(s => s.id === node.sourceId);
     if (!source) return false;
     
-    const sourceName = (source.name || '').toLowerCase();
     const sourceType = source.type;
+    const isDefaultTarget = sourceType === 'dshow_input' || sourceType === 'macos_avcapture';
     
-    // Video capture devices (webcams)
-    if (sourceType === 'dshow_input' || sourceType === 'macos_avcapture') {
-      return true;
+    // Check if there's an explicit custom setting (true or false)
+    if (node.sourceId in customSourceTargets) {
+      return customSourceTargets[node.sourceId];
     }
     
-    /*
-    // Image/video sources with webcam/frame in name (webcam frames/overlays)
-    if (sourceType === 'image_source' || sourceType === 'ffmpeg_source') {
-      if (sourceName.includes('webcam') || sourceName.includes('frame') || sourceName.includes('camera') || sourceName.includes('facecam')) {
-        return true;
-      }
-    }
-    */
-    
-    return false;
+    // Fall back to default behavior
+    return isDefaultTarget;
   }).map(node => ({
     node,
     source: sources.find(s => s.id === node.sourceId)
@@ -290,19 +355,15 @@ export function animateSceneTransition(controls, planeWidth, planeHeight, option
     }
     
     const duration = (options.duration || SCENE_TRANSITION.duration) * 1000;
+    const centerZ = options.centerZ || 2.25;
     
-    // Random starting position (between 1 and 3 on each axis)
-    const posA = {
-      x: randomBetween(-2, 2),
-      y: randomBetween(-1, 1),
-      z: randomBetween(2, 4)
-    };
+    // Random starting position and target
+    const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+    const posA = randomStart.position;
+    const targetA = randomStart.target;
     
-    // Random target on the plane for starting look-at
-    const targetA = getRandomPointOnPlane(planeWidth, planeHeight);
-    
-    // End position: centered, at distance 1 from plane
-    const posB = { x: 0, y: 0, z: 2.25 };
+    // End position: centered, at calculated distance from plane
+    const posB = { x: 0, y: 0, z: centerZ };
     
     // End target: center of plane
     const targetB = { x: 0, y: 0, z: 0 };
@@ -461,6 +522,7 @@ export function animateBackToCenter(controls, options = {}) {
     }
     
     const duration = (options.duration || SCENE_TRANSITION.webcamFocusDuration) * 1000;
+    const centerZ = options.centerZ || 2.25;
     
     // Get current camera state as starting point
     const currentPos = controls.getPosition();
@@ -479,7 +541,7 @@ export function animateBackToCenter(controls, options = {}) {
     };
     
     // End position: centered view
-    const posB = { x: 0, y: 0, z: 2.25 };
+    const posB = { x: 0, y: 0, z: centerZ };
     const targetB = { x: 0, y: 0, z: 0 };
     
     console.log('animateBackToCenter: Returning to center view');
@@ -543,20 +605,20 @@ export async function performSceneCameraAnimation(controls, nodes, sources, canv
   }
   
   const isGameplay = isGameplayScene(nodes, sources);
-  const webcamSources = findWebcamSources(nodes, sources);
+  const sourceTargets = findSourceTargets(nodes, sources);
   
-  console.log(`performSceneCameraAnimation: isGameplay=${isGameplay}, webcamSources=${webcamSources.length}, sceneDuration=${sceneDuration}ms`);
+  console.log(`performSceneCameraAnimation: isGameplay=${isGameplay}, sourceTargets=${sourceTargets.length}, sceneDuration=${sceneDuration}ms`);
   
-  if (isGameplay && webcamSources.length > 0) {
-    // Gameplay scene with webcam: do 2 animations
+  if (sourceTargets.length > 0) {
+    // Scene with source target: do multi-stage animation
     // First: random to center (takes ~40% of scene time)
-    // Then: focus on webcam (takes ~30% of scene time)
+    // Then: focus on target (takes ~30% of scene time)
     // Finally: back to center (takes ~30% of scene time)
     
     const firstAnimDuration = Math.min(2, sceneDuration * 0.35 / 1000); // 35% of scene, max 2s
     const focusAnimDuration = Math.min(1.5, sceneDuration * 0.25 / 1000); // 25% of scene, max 1.5s
     const returnAnimDuration = Math.min(1.5, sceneDuration * 0.25 / 1000); // 25% of scene, max 1.5s
-    const focusHoldTime = sceneDuration * 0.15; // 15% hold time on webcam
+    const focusHoldTime = sceneDuration * 0.15; // 15% hold time on target
     
     // First animation: random to center
     await animateSceneTransition(controls, planeWidth, planeHeight, { duration: firstAnimDuration });
@@ -564,19 +626,19 @@ export async function performSceneCameraAnimation(controls, nodes, sources, canv
     // Small pause before focusing
     await new Promise(r => setTimeout(r, SCENE_TRANSITION.focusDelay * 1000));
     
-    // Pick the first webcam source
-    const { node: webcamNode, source: webcamSource } = webcamSources[0];
+    // Pick the first source target
+    const { node: targetNode, source: targetSource } = sourceTargets[0];
     
-    // Calculate webcam position on plane
-    const webcamCenter = getSourceCenterOnPlane(webcamNode, webcamSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
-    const webcamDistance = getCameraDistanceForSource(webcamNode, webcamSource, canvasWidth, canvasHeight, 2);
+    // Calculate target position on plane
+    const targetCenter = getSourceCenterOnPlane(targetNode, targetSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
+    const targetDistance = getCameraDistanceForSource(targetNode, targetSource, canvasWidth, canvasHeight, 2);
     
-    console.log('  Webcam center:', webcamCenter, 'distance:', webcamDistance);
+    console.log('  Source target center:', targetCenter, 'distance:', targetDistance);
     
-    // Second animation: focus on webcam
-    await animateToSource(controls, webcamCenter, webcamDistance, planeWidth, planeHeight, { duration: focusAnimDuration });
+    // Second animation: focus on target
+    await animateToSource(controls, targetCenter, targetDistance, planeWidth, planeHeight, { duration: focusAnimDuration });
     
-    // Hold on webcam for a moment
+    // Hold on target for a moment
     await new Promise(r => setTimeout(r, focusHoldTime));
     
     // Third animation: return to center
@@ -622,7 +684,7 @@ function generateRandomStartPosition(planeWidth, planeHeight) {
     position: {
       x: randomBetween(-2, 2),
       y: randomBetween(-1, 1),
-      z: randomBetween(2, 4)
+      z: randomBetween(1.5, 2.5)
     },
     target: {
       x: randomBetween(-halfWidth * 0.8, halfWidth * 0.8),
@@ -648,6 +710,8 @@ function generateRandomStartPosition(planeWidth, planeHeight) {
  * @param {number} params.canvasHeight - Canvas height in pixels
  * @param {number} params.planeWidth - Three.js plane width (usually ~3.55 for 16:9)
  * @param {number} params.planeHeight - Three.js plane height (usually 2)
+ * @param {string} params.targetBehavior - 'zoom' or 'cut'
+ * @param {Object} params.customSourceTargets - Custom source target IDs
  * @returns {Object} Complete timeline data to send via postMessage
  */
 export function buildCameraTimeline(params) {
@@ -662,12 +726,17 @@ export function buildCameraTimeline(params) {
     canvasWidth,
     canvasHeight,
     planeWidth,
-    planeHeight
+    planeHeight,
+    centerZ = 2.25, // Camera distance to fit plane in view (calculated from fitToRect)
+    targetBehavior = 'zoom',
+    customSourceTargets = {}
   } = params;
   
   const timeline = {
     planeWidth,
     planeHeight,
+    centerZ,
+    targetBehavior,
     scenes: []
   };
   
@@ -686,85 +755,152 @@ export function buildCameraTimeline(params) {
     
     // Analyze scene type
     const isGameplay = isGameplayScene(nodes, activeSources);
-    const webcamSources = findWebcamSources(nodes, activeSources);
+    const sourceTargets = findSourceTargets(nodes, activeSources, customSourceTargets);
     
     // Build animation sequence for this scene
     const sceneEntry = {
       name: scene.name,
       startTimeMs: currentTimeMs,
       isGameplay,
+      hasSourceTarget: sourceTargets.length > 0,
+      targetBehavior,
       animations: []
     };
     
     // Center position (used as end point for most animations)
-    const centerPos = { x: 0, y: 0, z: 2.25 };
+    const centerPos = { x: 0, y: 0, z: centerZ };
     const centerTarget = { x: 0, y: 0, z: 0 };
     
-    if (isGameplay && webcamSources.length > 0) {
-      // Gameplay scene: multi-stage animation sequence
-      const firstAnimDuration = Math.min(2000, sceneDuration * 0.35);
-      const focusDelay = SCENE_TRANSITION.focusDelay * 1000;
-      const focusAnimDuration = Math.min(1500, sceneDuration * 0.25);
-      const focusHoldTime = sceneDuration * 0.15;
-      const returnAnimDuration = Math.min(1500, sceneDuration * 0.25);
-      
-      // Generate random start position (baked into timeline)
-      const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
-      
-      // Animation 1: Random position to center
-      sceneEntry.animations.push({
-        type: 'animate',
-        durationMs: firstAnimDuration,
-        startPos: randomStart.position,
-        startTarget: randomStart.target,
-        endPos: centerPos,
-        endTarget: centerTarget,
-        easing: EASING.POWER3_OUT
-      });
-      
-      // Wait before focusing on webcam
-      sceneEntry.animations.push({
-        type: 'wait',
-        durationMs: focusDelay
-      });
-      
-      // Calculate webcam focus position
-      const { node: webcamNode, source: webcamSource } = webcamSources[0];
-      const webcamCenter = getSourceCenterOnPlane(webcamNode, webcamSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
-      const webcamDistance = getCameraDistanceForSource(webcamNode, webcamSource, canvasWidth, canvasHeight, 2);
-      
-      const webcamPos = { x: webcamCenter.x, y: webcamCenter.y, z: webcamDistance };
-      const webcamTarget = { x: webcamCenter.x, y: webcamCenter.y, z: 0 };
-      
-      // Animation 2: Focus on webcam (starts from current position - use 'fromCurrent')
-      sceneEntry.animations.push({
-        type: 'animate',
-        durationMs: focusAnimDuration,
-        fromCurrent: true, // Will use current camera position as start
-        endPos: webcamPos,
-        endTarget: webcamTarget,
-        easing: EASING.POWER2_INOUT
-      });
-      
-      // Hold on webcam
-      sceneEntry.animations.push({
-        type: 'wait',
-        durationMs: focusHoldTime
-      });
-      
-      // Animation 3: Return to center
-      sceneEntry.animations.push({
-        type: 'animate',
-        durationMs: returnAnimDuration,
-        fromCurrent: true,
-        endPos: centerPos,
-        endTarget: centerTarget,
-        easing: EASING.POWER3_OUT
-      });
+    if (sourceTargets.length > 0) {
+      if (targetBehavior === 'cut') {
+        // CUT MODE: Equal time for each target + center, use transition-style animations
+        // Number of segments = number of targets + 1 (for final center view)
+        const numSegments = sourceTargets.length + 1;
+        const segmentDuration = sceneDuration / numSegments;
+        
+        // Each cut transition gets ~50% of segment for animation, 50% for holding
+        const cutAnimDuration = segmentDuration * 0.5;
+        const holdDuration = segmentDuration * 0.5;
+        
+        // Animate through each source target with cut transitions
+        sourceTargets.forEach((targetData, targetIndex) => {
+          const { node: targetNode, source: targetSource } = targetData;
+          
+          // Calculate target position on plane
+          const targetCenter = getSourceCenterOnPlane(targetNode, targetSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
+          const targetDistance = getCameraDistanceForSource(targetNode, targetSource, canvasWidth, canvasHeight, 2);
+          
+          const targetPos = { x: targetCenter.x, y: targetCenter.y, z: targetDistance };
+          const targetLookAt = { x: targetCenter.x, y: targetCenter.y, z: 0 };
+          
+          // Generate random start position for the cut transition
+          const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+          
+          // Cut transition to this target (like scene transitions - random to target)
+          sceneEntry.animations.push({
+            type: 'animate',
+            durationMs: cutAnimDuration,
+            startPos: randomStart.position,
+            startTarget: randomStart.target,
+            endPos: targetPos,
+            endTarget: targetLookAt,
+            easing: EASING.POWER3_OUT
+          });
+          
+          // Hold on target
+          sceneEntry.animations.push({
+            type: 'wait',
+            durationMs: holdDuration
+          });
+        });
+        
+        // Final cut transition to center/full plane view
+        const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+        sceneEntry.animations.push({
+          type: 'animate',
+          durationMs: cutAnimDuration,
+          startPos: randomStart.position,
+          startTarget: randomStart.target,
+          endPos: centerPos,
+          endTarget: centerTarget,
+          easing: EASING.POWER3_OUT
+        });
+        
+        // Hold on center for remaining time
+        sceneEntry.animations.push({
+          type: 'wait',
+          durationMs: holdDuration
+        });
+        
+      } else {
+        // ZOOM MODE: Smooth multi-stage animation with smart durations
+        // Now supports multiple source targets
+        const durations = getZoomDurations(sceneDuration, sourceTargets.length);
+        
+        // Generate random start position (baked into timeline)
+        const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
+        
+        // Animation 1: Random position to center
+        sceneEntry.animations.push({
+          type: 'animate',
+          durationMs: durations.firstAnimDuration,
+          startPos: randomStart.position,
+          startTarget: randomStart.target,
+          endPos: centerPos,
+          endTarget: centerTarget,
+          easing: EASING.POWER3_OUT
+        });
+        
+        // Wait before focusing on target
+        sceneEntry.animations.push({
+          type: 'wait',
+          durationMs: durations.focusDelay
+        });
+        
+        // Focus on each source target in sequence
+        sourceTargets.forEach((targetData, targetIndex) => {
+          const { node: targetNode, source: targetSource } = targetData;
+          
+          // Calculate source target focus position
+          const targetCenter = getSourceCenterOnPlane(targetNode, targetSource, canvasWidth, canvasHeight, planeWidth, planeHeight);
+          const targetDistance = getCameraDistanceForSource(targetNode, targetSource, canvasWidth, canvasHeight, 2);
+          
+          const targetPos = { x: targetCenter.x, y: targetCenter.y, z: targetDistance };
+          const targetLookAt = { x: targetCenter.x, y: targetCenter.y, z: 0 };
+          
+          // Animation: Focus on source target (starts from current position)
+          sceneEntry.animations.push({
+            type: 'animate',
+            durationMs: durations.focusAnimDuration,
+            fromCurrent: true,
+            endPos: targetPos,
+            endTarget: targetLookAt,
+            easing: EASING.POWER2_INOUT
+          });
+          
+          // Hold on target
+          sceneEntry.animations.push({
+            type: 'wait',
+            durationMs: durations.focusHoldTime
+          });
+        });
+        
+        // Final Animation: Return to center
+        sceneEntry.animations.push({
+          type: 'animate',
+          durationMs: durations.returnAnimDuration,
+          fromCurrent: true,
+          endPos: centerPos,
+          endTarget: centerTarget,
+          easing: EASING.POWER2_INOUT
+        });
+      }
       
     } else {
-      // Regular scene: single transition animation
-      const animDuration = Math.min(2500, sceneDuration * 0.5);
+      // Regular scene (no source targets): single transition animation
+      // Use smarter duration based on scene length
+      const durationFactor = Math.min(1.5, Math.max(0.6, sceneDuration / 5000));
+      const animDuration = Math.min(2500 * durationFactor, sceneDuration * 0.5);
       
       // Generate random start position
       const randomStart = generateRandomStartPosition(planeWidth, planeHeight);
